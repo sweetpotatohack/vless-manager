@@ -13,6 +13,7 @@ readonly GREEN='\033[0;32m'
 readonly YELLOW='\033[0;33m'
 readonly BLUE='\033[0;34m'
 readonly PURPLE='\033[0;35m'
+readonly WHITE='\033[0;37m'
 readonly NC='\033[0m'
 
 # Installation paths
