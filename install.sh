@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # Quick installer for VLESS Manager Pro v1.2
-# Usage: curl -fsSL https://raw.githubusercontent.com/sweetpotatohack/vless-manager-pro/main/install.sh | sudo bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/sweetpotatohack/vless-manager-fixed/main/install.sh | sudo bash
 
 set -e
 
-REPO_URL="https://github.com/sweetpotatohack/vless-manager-pro"
+REPO_URL="https://github.com/sweetpotatohack/vless-manager-fixed"
 TEMP_DIR="/tmp/vless-manager-install"
 
 echo "🔥 VLESS Manager Pro v1.2 - Quick Installer"

@@ -387,6 +387,10 @@ main() {
     cp vless_manager.sh "$INSTALL_DIR/" 2>/dev/null || log_warn "Main script not found in current directory"
     chmod +x "$INSTALL_DIR/vless_manager.sh" 2>/dev/null || true
     ln -sf "$INSTALL_DIR/vless_manager.sh" /usr/local/bin/vless-manager 2>/dev/null || true
+
+    # Install vless-servers script
+    cp vless-servers-script.sh /usr/local/bin/vless-servers 2>/dev/null || log_warn "vless-servers script not found"
+    chmod +x /usr/local/bin/vless-servers 2>/dev/null || true
     
     echo
     echo -e "${GREEN}╔════════════════════════════════════════════════════════════════╗${NC}"
