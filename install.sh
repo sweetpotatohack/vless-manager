@@ -1,45 +1,59 @@
 #!/bin/bash
 
-# Quick installer for VLESS Manager Pro v1.2
-# Usage: curl -fsSL https://raw.githubusercontent.com/sweetpotatohack/vless-manager-fixed/main/install.sh | sudo bash
+# VLESS Manager Pro v2.0 — установка одной командой
+# Использование:
+#   curl -fsSL .../install.sh | sudo bash
+#   или из клонированного репозитория: sudo ./install.sh
+#
+# Переменные окружения:
+#   VLESS_REPO_URL — URL git-репозитория (по умолчанию ниже)
 
 set -e
 
-REPO_URL="https://github.com/sweetpotatohack/vless-manager-fixed"
-TEMP_DIR="/tmp/vless-manager-install"
+VLESS_REPO_URL="${VLESS_REPO_URL:-https://github.com/sweetpotatohack/vless-manager-fixed}"
+TEMP_DIR="/tmp/vless-manager-install-$$"
 
-echo "🔥 VLESS Manager Pro v1.2 - Quick Installer"
-echo "🚀 Downloading and installing with networking fixes..."
+echo "🔥 VLESS Manager Pro v2.0 — TLS 1.2–1.3, RSA-4096, XUDP, systemd"
+echo "🚀 Установка..."
 
-# Check root
 if [[ $EUID -ne 0 ]]; then
-    echo "❌ This script must be run as root (use sudo)"
+    echo "❌ Запустите от root: sudo bash $0"
     exit 1
 fi
 
-# Create temp directory
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+# При запуске через curl/wget путь может быть пустым или /dev/stdin
+if [[ -f "$SCRIPT_PATH" ]] && [[ "$SCRIPT_PATH" != "/dev/stdin" ]] && [[ -f "$(dirname "$SCRIPT_PATH")/install_vless_manager.sh" ]]; then
+    REPO_ROOT="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+    echo "📂 Используется локальный репозиторий: $REPO_ROOT"
+    cd "$REPO_ROOT"
+    chmod +x install_vless_manager.sh
+    exec ./install_vless_manager.sh
+fi
+
+echo "📦 Клонирование $VLESS_REPO_URL ..."
 mkdir -p "$TEMP_DIR"
 cd "$TEMP_DIR"
 
-# Download repository
 if command -v git >/dev/null 2>&1; then
-    git clone "$REPO_URL.git" .
+    git clone --depth 1 "$VLESS_REPO_URL.git" .
 else
-    echo "📦 Installing git..."
+    echo "📦 Установка git..."
     if command -v apt-get >/dev/null 2>&1; then
         apt-get update -q && apt-get install -y git
     elif command -v yum >/dev/null 2>&1; then
         yum install -y git
+    else
+        echo "❌ Нужен git"
+        exit 1
     fi
-    git clone "$REPO_URL.git" .
+    git clone --depth 1 "$VLESS_REPO_URL.git" .
 fi
 
-# Run installer
 chmod +x install_vless_manager.sh
 ./install_vless_manager.sh
 
-# Cleanup
 cd /
 rm -rf "$TEMP_DIR"
 
-echo "✅ Installation completed! Run 'vless-manager' to get started."
+echo "✅ Готово. Команды: vless-manager | systemctl status vless-xray"

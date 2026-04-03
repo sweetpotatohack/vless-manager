@@ -60,7 +60,7 @@ stop_single_server() {
     
     if [ ! -f "$pid_file" ]; then
         echo -e "${YELLOW}⚠️ Сервер для $client_name не запущен${NC}"
-        return 1
+        return 0
     fi
     
     local pid=$(cat "$pid_file")
