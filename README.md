@@ -57,29 +57,25 @@ Install **on a Linux VPS** as **root** (Debian/Ubuntu or RHEL/CentOS family). Th
 | **OS** | Debian/Ubuntu or RHEL/CentOS (see installer checks). |
 | **DNS (Let’s Encrypt)** | **A** record of your domain must point to this server’s **IPv4**. If **AAAA (IPv6)** exists but does not reach this host, validation often fails — remove AAAA or fix IPv6. **Cloudflare:** use **DNS only** (grey cloud), not **Proxied**. |
 | **Port 80** | Required **during issuance/renewal** of Let’s Encrypt (**HTTP-01**, certbot **standalone**). Open **80/tcp** from the Internet and stop nginx/apache on :80 for that step if they conflict. |
-| **Non-interactive install** | Piping `install.sh` **without a TTY** skips Let’s Encrypt prompts → **self-signed TLS** (enable **Allow insecure** / skip verify in clients unless you add real certs later). |
+| **Non-interactive install** | Running `install_vless_manager.sh` **without a TTY** (e.g. piped or automated) skips Let’s Encrypt prompts → **self-signed TLS** (enable **Allow insecure** / skip verify in clients unless you add real certs later). |
+| **Git** | Required on the server to clone this repository (`apt install git` / `yum install git` if missing). |
 
-### ⚡ One-line install (recommended)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/sweetpotatohack/vless-manager/main/install.sh | sudo bash
-```
-
-Optional: clone from another fork or mirror:
+### ⚡ Quick install (recommended)
 
 ```bash
-export VLESS_REPO_URL='https://github.com/sweetpotatohack/vless-manager'
-curl -fsSL https://raw.githubusercontent.com/sweetpotatohack/vless-manager/main/install.sh | sudo bash
-```
-
-### 📋 Manual install (from a git clone)
-
-```bash
-git clone https://github.com/sweetpotatohack/vless-manager.git
+git clone --depth 1 https://github.com/sweetpotatohack/vless-manager.git
 cd vless-manager
 chmod +x install_vless_manager.sh
 sudo ./install_vless_manager.sh
 ```
+
+### 📋 Same thing in one line
+
+```bash
+git clone --depth 1 https://github.com/sweetpotatohack/vless-manager.git /tmp/vless-manager && cd /tmp/vless-manager && chmod +x install_vless_manager.sh && sudo ./install_vless_manager.sh
+```
+
+(Install **`git`** first if the system does not have it.)
 
 If the installer is started **outside** the repo directory (e.g. copied scripts only), set:
 
@@ -388,7 +384,7 @@ Please include:
 - **UFW/iptables**: VLESS port range + **:80** when LE is used
 - **`resolve_install_repo_root`**: install works when not run from repo cwd
 - **`vless-servers`** / **`vless-xray.service`**: start/stop lifecycle fixes
-- Default clone URL in **`install.sh`**: **`sweetpotatohack/vless-manager`**
+- Install only via **`install_vless_manager.sh`** (after `git clone` of **`sweetpotatohack/vless-manager`**)
 
 ### **v1.3-QR-ENHANCED**
 - 🆕 **QR Code Generation**: Automatic PNG QR codes for all configs
