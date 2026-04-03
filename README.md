@@ -1,26 +1,28 @@
 <div align="center">
 
-# 🔥 VLESS Manager Pro v1.3 - QR CODES & NETWORK ENHANCEMENT
+# 🔥 VLESS Manager Pro v2.0 — VLESS + TLS + Xray + systemd
 
-## Ultimate VPN Management & Networking System - **QR CODES INTEGRATED**
+## Ultimate VPN Management — QR codes, Let’s Encrypt, sing-box bundles
 
-<img src="https://img.shields.io/badge/Version-1.3--qr--enhanced-brightgreen?style=for-the-badge" alt="Version">
-<img src="https://img.shields.io/badge/Status-QR_CODES_READY-success?style=for-the-badge" alt="Status">
+<img src="https://img.shields.io/badge/Version-2.0-brightgreen?style=for-the-badge" alt="Version">
+<img src="https://img.shields.io/badge/Status-stable-success?style=for-the-badge" alt="Status">
 <img src="https://img.shields.io/badge/Platform-Linux-orange?style=for-the-badge" alt="Platform">
-<img src="https://img.shields.io/badge/QR_Codes-INTEGRATED-blue?style=for-the-badge" alt="QR Codes">
+<img src="https://img.shields.io/badge/TLS-LE%20or%20self--signed-blue?style=for-the-badge" alt="TLS">
 
-**Professional-grade VLESS VPN management with QR CODES and ALL NETWORK ACCESS**
+**Professional VLESS server management on Linux (Xray-core, `vless-servers`, `vless-xray.service`).**
 
-![GitHub stars](https://img.shields.io/github/stars/sweetpotatohack/vless-manager-fixed?style=social)
-![GitHub forks](https://img.shields.io/github/forks/sweetpotatohack/vless-manager-fixed?style=social)
+![GitHub stars](https://img.shields.io/github/stars/sweetpotatohack/vless-manager?style=social)
+![GitHub forks](https://img.shields.io/github/forks/sweetpotatohack/vless-manager?style=social)
+
+**Canonical repository:** [sweetpotatohack/vless-manager](https://github.com/sweetpotatohack/vless-manager)
 
 </div>
 
 ---
 
-## 🎯 **What's New in v1.3-QR-ENHANCED** 
+## 🎯 **Highlights**
 
-### 🔥 **MAJOR NEW FEATURES**
+### 🔥 **MAJOR FEATURES**
 - **📱 QR CODE GENERATION** - Automatic QR codes for easy mobile setup
 - **🔍 INTERACTIVE CONFIG VIEWER** - Select configs by number to view QR codes
 - **🌐 ALL NETWORK ACCESS** - VLESS clients can access ALL network interfaces
@@ -33,7 +35,7 @@
 - ✅ Fixed Database Integration - Auto-rebuild from existing configs
 - ✅ Fixed Deletion UI - Numbered selection for easy deletion
 
-### 🆕 **v1.3 Enhancements**
+### 🆕 **Recent enhancements**
 - **📱 QR Code Generation**: Automatic QR codes created for each config
 - **📺 Terminal QR Display**: View QR codes directly in terminal
 - **💾 QR Code Storage**: QR codes saved as PNG files in `/etc/vless-manager/qr-codes/`
@@ -44,31 +46,80 @@
 
 ---
 
-## 🚀 **Installation** 
+## 🚀 **Full installation (server)**
 
-### ⚡ **One-Line Installation (Recommended)**
+Install **on a Linux VPS** as **root** (Debian/Ubuntu or RHEL/CentOS family). The installer ships **Xray**, **sqlite3**, **qrencode**, **certbot** (when needed), **iptables/UFW** rules for VLESS ports **25000–45000**, and registers **`vless-xray.service`** (uses **`vless-servers start|stop`**).
+
+### Prerequisites
+
+| Topic | Notes |
+|--------|--------|
+| **OS** | Debian/Ubuntu or RHEL/CentOS (see installer checks). |
+| **DNS (Let’s Encrypt)** | **A** record of your domain must point to this server’s **IPv4**. If **AAAA (IPv6)** exists but does not reach this host, validation often fails — remove AAAA or fix IPv6. **Cloudflare:** use **DNS only** (grey cloud), not **Proxied**. |
+| **Port 80** | Required **during issuance/renewal** of Let’s Encrypt (**HTTP-01**, certbot **standalone**). Open **80/tcp** from the Internet and stop nginx/apache on :80 for that step if they conflict. |
+| **Non-interactive install** | Piping `install.sh` **without a TTY** skips Let’s Encrypt prompts → **self-signed TLS** (enable **Allow insecure** / skip verify in clients unless you add real certs later). |
+
+### ⚡ One-line install (recommended)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sweetpotatohack/vless-manager-fixed/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/sweetpotatohack/vless-manager/main/install.sh | sudo bash
 ```
 
-This will:
-1. Download the repository
-2. Install all dependencies (Xray, sqlite3, qrencode, net-tools, etc.)
-3. Configure networking with working iptables rules for ALL interfaces
-4. Create sample client configuration with QR code
-5. Start VLESS Manager Pro v1.3
-
-### 📋 **Manual Installation**
+Optional: clone from another fork or mirror:
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/sweetpotatohack/vless-manager-fixed.git
-cd vless-manager-fixed
+export VLESS_REPO_URL='https://github.com/sweetpotatohack/vless-manager'
+curl -fsSL https://raw.githubusercontent.com/sweetpotatohack/vless-manager/main/install.sh | sudo bash
+```
 
-# 2. Run the installer
+### 📋 Manual install (from a git clone)
+
+```bash
+git clone https://github.com/sweetpotatohack/vless-manager.git
+cd vless-manager
+chmod +x install_vless_manager.sh
 sudo ./install_vless_manager.sh
 ```
+
+If the installer is started **outside** the repo directory (e.g. copied scripts only), set:
+
+```bash
+export VLESS_MANAGER_REPO=/path/to/vless-manager
+sudo -E ./install_vless_manager.sh
+```
+
+### TLS during `install_vless_manager.sh`
+
+- **Let’s Encrypt:** enter **FQDN** (e.g. `vpn.example.com`) and a valid **email**. Installer runs **certbot certonly --standalone**, writes **`/etc/vless-manager/tls.env`**, and installs a **renewal hook** that restarts **`vless-xray`** after renew.
+- **Self-signed:** press **Enter** at the domain prompt (or invalid email) → clients must allow **insecure** / self-signed unless you replace certs manually.
+- **UFW active:** installer adds **VLESS TCP range** and **80/tcp** when Let’s Encrypt is used.
+
+### After install
+
+```bash
+vless-manager              # interactive menu
+vless-servers status       # per-client Xray processes
+systemctl status vless-xray
+```
+
+Server-side client material:
+
+- VLESS URLs: `/etc/vless-manager/urls/<client>.txt`
+- QR PNG: `/etc/vless-manager/qr-codes/<client>.png`
+- **sing-box** bundles: `/etc/vless-manager/bundles/<client>.sing-box.json`
+
+Logs: `/var/log/vless-manager.log`, per-client: `/var/log/vless-<name>.log`; systemd: `journalctl -u vless-xray`.
+
+---
+
+## 💻 **Connecting from a PC (Windows & Linux)**
+
+For **desktop** machines, use **[v2rayN](https://github.com/2dust/v2rayN)** — a GUI client for **Windows and Linux** (and macOS) with **Xray** and **sing-box** support. Import your **VLESS** link from `/etc/vless-manager/urls/<name>.txt` (or scan the same QR you use on the phone), or open the generated **sing-box** JSON if the app supports it.
+
+- **Project:** [github.com/2dust/v2rayN](https://github.com/2dust/v2rayN)  
+- **Releases:** install the build for your OS from the project’s **Releases** page; on Linux follow the project’s notes for TUN/capabilities if you use TUN mode.
+
+Mobile clients (v2rayNG, Shadowrocket, etc.) can keep using QR / URL as before.
 
 ---
 
@@ -127,11 +178,11 @@ vless-servers restart client_name
 - Select any config by number to view its QR code
 - VLESS URL and QR code displayed together
 
-#### **Mobile Setup**
+#### **Mobile setup**
 ```bash
 1. Create config: vless-manager → option 1 → enter name
-2. Scan QR code with v2rayNG, v2rayN, or similar app
-3. Instant connection - no manual typing needed!
+2. Scan QR code with v2rayNG / Shadowrocket / similar
+3. On PC (Windows/Linux): import the same URL in v2rayN — see section above
 ```
 
 ### 🌐 **Network Enhancement Features**
@@ -215,14 +266,17 @@ vless-manager
 ├── qr-codes/                   # QR CODE FILES (NEW!)
 │   ├── client1.png              # QR codes as PNG images
 │   └── client2.png
-├── clients.db                  # SQLite database (enhanced with QR paths)
+├── bundles/                    # sing-box JSON per client
+├── tls.env                     # TLS mode (Let's Encrypt or self-signed)
+├── clients.db                  # SQLite database (QR paths, etc.)
 └── backup/                     # Automatic backups
 
 /var/log/
-└── vless-manager.log          # Application logs
+├── vless-manager.log           # Manager log
+└── vless-<client>.log          # Per-client Xray logs (when used)
 
 /opt/vless-manager/
-└── vless_manager.sh           # Main application v1.3
+└── vless_manager.sh           # Main application
 ```
 
 ---
@@ -248,19 +302,24 @@ vless-manager
 
 ---
 
-## 📱 **Mobile App Compatibility**
+## 📱 **Client compatibility**
 
-### ✅ **Tested with QR Codes**
-- **v2rayNG** (Android) - ✅ QR scan works perfectly
-- **v2rayN** (Windows) - ✅ QR import supported
-- **Shadowrocket** (iOS) - ✅ QR scan compatible
-- **v2rayU** (macOS) - ✅ QR code import
-- **Qv2ray** (Linux/Windows) - ✅ Manual paste or QR
+### **PC — Windows & Linux (recommended)**
 
-### 📋 **Setup Instructions**
-1. **Create VLESS config** with `vless-manager`
-2. **Scan QR code** with your preferred app
-3. **Connect instantly** - no manual configuration!
+Use **[v2rayN](https://github.com/2dust/v2rayN)** to import the VLESS URL or QR ([releases](https://github.com/2dust/v2rayN/releases)).
+
+### **Mobile & other**
+
+- **v2rayNG** (Android) — QR / URL  
+- **Shadowrocket** (iOS) — QR / URL  
+- **v2rayN** (Windows / Linux / macOS) — same project as desktop above  
+- Other Xray/sing-box clients — paste URL from `/etc/vless-manager/urls/<name>.txt`
+
+### 📋 **Quick steps**
+
+1. Create a client in `vless-manager` (QR + URL file on server).  
+2. **Phone:** scan QR. **PC:** open the same link in **v2rayN**.  
+3. Connect using the client’s docs (system proxy / TUN as needed).
 
 ---
 
@@ -291,25 +350,17 @@ vless-manager
 
 ---
 
-## 🔄 **Update Instructions**
+## 🔄 **Update**
 
-### 🚀 **Update from v1.2 to v1.3**
 ```bash
-# Backup current config
 sudo cp -r /etc/vless-manager /etc/vless-manager.backup
 
-# Download latest version
-git clone https://github.com/sweetpotatohack/vless-manager-fixed.git
-cd vless-manager-fixed
-
-# Run installer (preserves existing clients)
+git clone https://github.com/sweetpotatohack/vless-manager.git
+cd vless-manager
 sudo ./install_vless_manager.sh
-
-# Rebuild database with QR code support
-vless-manager
-# Select option 9 to rebuild database
-# QR codes will be generated for existing configs
 ```
+
+Re-run **`vless-manager`** and use **rebuild DB / resync** options if the menu offers them after an upgrade. A full reinstall **purges** `/etc/vless-manager` — always **backup** first.
 
 ---
 
@@ -323,15 +374,23 @@ Please include:
 - **VPN configuration**: OpenVPN logs if using VPN integration
 
 ### 💬 **Getting Help**
-- 📚 **Documentation**: [GitHub Wiki](https://github.com/sweetpotatohack/vless-manager-fixed/wiki)
-- 🐛 **Bug Reports**: [GitHub Issues](https://github.com/sweetpotatohack/vless-manager-fixed/issues)
-- 💬 **Discussions**: [GitHub Discussions](https://github.com/sweetpotatohack/vless-manager-fixed/discussions)
+- 📚 **Repository**: [sweetpotatohack/vless-manager](https://github.com/sweetpotatohack/vless-manager)
+- 🐛 **Issues**: [GitHub Issues](https://github.com/sweetpotatohack/vless-manager/issues)
+- 💬 **Discussions**: [GitHub Discussions](https://github.com/sweetpotatohack/vless-manager/discussions)
 
 ---
 
 ## 🌟 **Changelog**
 
-### **v1.3-QR-ENHANCED** (Current - All New Features)
+### **v2.0** (installer / TLS)
+
+- Let’s Encrypt via **certbot** (optional), **`tls.env`**, renewal hook for **`vless-xray`**
+- **UFW/iptables**: VLESS port range + **:80** when LE is used
+- **`resolve_install_repo_root`**: install works when not run from repo cwd
+- **`vless-servers`** / **`vless-xray.service`**: start/stop lifecycle fixes
+- Default clone URL in **`install.sh`**: **`sweetpotatohack/vless-manager`**
+
+### **v1.3-QR-ENHANCED**
 - 🆕 **QR Code Generation**: Automatic PNG QR codes for all configs
 - 🆕 **Interactive Config Viewer**: Select configs by number to view QR  
 - 🆕 **Multi-Interface Support**: VLESS access through ALL network interfaces
@@ -354,6 +413,6 @@ Please include:
 
 *"Now with QR codes for instant mobile setup!"*
 
-**QR CODES + NETWORK ENHANCEMENT - v1.3 🚀📱**
+**VLESS Manager Pro — v2.0 🚀**
 
 </div>

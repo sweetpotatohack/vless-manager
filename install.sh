@@ -10,7 +10,7 @@
 
 set -e
 
-VLESS_REPO_URL="${VLESS_REPO_URL:-https://github.com/sweetpotatohack/vless-manager-fixed}"
+VLESS_REPO_URL="${VLESS_REPO_URL:-https://github.com/sweetpotatohack/vless-manager}"
 TEMP_DIR="/tmp/vless-manager-install-$$"
 
 echo "🔥 VLESS Manager Pro v2.0 — TLS 1.2–1.3, RSA-4096, XUDP, systemd"
