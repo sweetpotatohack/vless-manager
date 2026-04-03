@@ -8,6 +8,15 @@ readonly CONFIG_DIR="/etc/vless-manager"
 readonly LOG_DIR="/var/log"
 readonly CLIENT_DIR="$CONFIG_DIR/clients"
 readonly QR_DIR="$CONFIG_DIR/qr-codes"
+readonly CERT_DIR="$CONFIG_DIR/certs"
+readonly BUNDLE_DIR="$CONFIG_DIR/bundles"
+readonly TLS_ENV="$CONFIG_DIR/tls.env"
+# WebSocket path (только для старых конфигов с network=ws)
+readonly VLESS_WS_PATH="/vless"
+# Высокие порты: не пересекаемся с 80/443 (Gophish, nginx, CDN) и типичными сервисами
+readonly VLESS_PORT_MIN=25000
+readonly VLESS_PORT_MAX=45000
+readonly VLESS_NEVER_PORTS=(80 443 8080 8443 8000 8888 3000 5000 3333 53 853 4443 9443 9444)
 
 # Colors
 readonly RED='\033[0;31m'
@@ -45,10 +54,19 @@ ensure_root() {
 
 # Setup directories
 setup_directories() {
-    mkdir -p "$CONFIG_DIR" "$CLIENT_DIR" "$LOG_DIR" "$QR_DIR"
-    mkdir -p "$CONFIG_DIR/urls" "$CONFIG_DIR/backup"
+    mkdir -p "$CONFIG_DIR" "$CLIENT_DIR" "$LOG_DIR" "$QR_DIR" "$CERT_DIR"
+    mkdir -p "$CONFIG_DIR/urls" "$CONFIG_DIR/backup" "$BUNDLE_DIR"
+    mkdir -p "$CONFIG_DIR/templates"
     chmod 755 "$CONFIG_DIR"
+    chmod 700 "$CERT_DIR"
     chmod 700 "$CLIENT_DIR"
+    [[ -f "$TLS_ENV" ]] && chmod 600 "$TLS_ENV"
+    local _tm_src=""
+    [[ -d "/opt/vless-manager/templates" ]] && _tm_src="/opt/vless-manager/templates"
+    [[ -z "$_tm_src" && -d "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/templates" ]] && _tm_src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/templates"
+    if [[ -n "$_tm_src" ]]; then
+        cp -f "$_tm_src/"* "$CONFIG_DIR/templates/" 2>/dev/null || true
+    fi
 }
 
 # Check dependencies  
@@ -108,20 +126,67 @@ generate_uuid() {
     fi
 }
 
-# Get server IP
+# Публичный IPv4 VPS (для ссылки/QR; клиент должен стучаться именно на этот адрес)
 get_server_ip() {
-    local ip
-    ip=$(curl -s ifconfig.me 2>/dev/null) || \
-    ip=$(curl -s icanhazip.com 2>/dev/null) || \
-    ip=$(hostname -I | awk '{print $1}')
-    echo "$ip"
+    local ip=""
+    local u
+    for u in "https://api.ipify.org" "https://ifconfig.me/ip" "https://icanhazip.com"; do
+        ip=$(curl -4 -fsS --max-time 7 "$u" 2>/dev/null | tr -d '\r\n ')
+        if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "$ip"
+            return 0
+        fi
+    done
+    ip=$(hostname -I 2>/dev/null | awk '{for(i=1;i<=NF;i++) if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) {print $i; exit}}')
+    echo "${ip:-127.0.0.1}"
 }
 
-# Find free port
+# Режим TLS: самоподпись или общий сертификат Let's Encrypt (из install)
+load_tls_env() {
+    TLS_MODE="selfsigned"
+    PUBLIC_HOST=""
+    LE_FULLCHAIN=""
+    LE_PRIVKEY=""
+    LE_EMAIL=""
+    [[ -f "$TLS_ENV" ]] || return 0
+    # shellcheck source=/dev/null
+    source "$TLS_ENV"
+}
+
+tls_uses_letsencrypt() {
+    load_tls_env
+    [[ "${TLS_MODE:-}" == "letsencrypt" && -n "${LE_FULLCHAIN:-}" && -f "${LE_FULLCHAIN}" && -n "${LE_PRIVKEY:-}" && -f "${LE_PRIVKEY}" ]]
+}
+
+# Адрес в ссылке/QR и SNI: домен (LE) или публичный IP
+get_public_host() {
+    load_tls_env
+    if [[ -n "${PUBLIC_HOST:-}" ]]; then
+        echo "$PUBLIC_HOST"
+    else
+        get_server_ip
+    fi
+}
+
+# Порт зарезервирован под веб/админки/ DNS — не выдаём клиентам VLESS
+vless_port_is_forbidden() {
+    local p="$1"
+    local x
+    for x in "${VLESS_NEVER_PORTS[@]}"; do
+        [[ "$p" -eq "$x" ]] && return 0
+    done
+    # привилегированный диапазон
+    [[ "$p" -lt 1024 ]] && return 0
+    return 1
+}
+
+# Свободный порт в диапазоне [min,max], без пересечения с «запретными»
 find_free_port() {
-    local start_port=${1:-10000}
-    local end_port=${2:-65535}
+    local start_port=${1:-$VLESS_PORT_MIN}
+    local end_port=${2:-$VLESS_PORT_MAX}
+    local port
     for ((port=start_port; port<=end_port; port++)); do
+        vless_port_is_forbidden "$port" && continue
         if ! netstat -tuln | grep -q ":$port "; then
             echo "$port"
             return 0
@@ -140,7 +205,6 @@ generate_qr_code() {
     if command -v qrencode >/dev/null 2>&1; then
         qrencode -s 8 -o "$qr_file" "$vless_url" 2>/dev/null
         if [[ $? -eq 0 ]]; then
-            echo "$qr_file"
             return 0
         fi
     fi
@@ -158,6 +222,22 @@ display_qr_terminal() {
     fi
 }
 
+# Добавить колонки в старую БД (установщик v1.2 создавал clients без config_path/url/qr_path)
+migrate_clients_db() {
+    local db="$CONFIG_DIR/clients.db"
+    [[ -f "$db" ]] || return 0
+    if ! sqlite3 "$db" "SELECT 1 FROM sqlite_master WHERE type='table' AND name='clients';" 2>/dev/null | grep -q 1; then
+        return 0
+    fi
+    local cols
+    cols=$(sqlite3 "$db" "PRAGMA table_info(clients);" 2>/dev/null | cut -d'|' -f2)
+    [[ -z "$cols" ]] && return 0
+    echo "$cols" | grep -qx 'config_path' || sqlite3 "$db" "ALTER TABLE clients ADD COLUMN config_path TEXT;" 2>/dev/null
+    echo "$cols" | grep -qx 'url' || sqlite3 "$db" "ALTER TABLE clients ADD COLUMN url TEXT;" 2>/dev/null
+    echo "$cols" | grep -qx 'qr_path' || sqlite3 "$db" "ALTER TABLE clients ADD COLUMN qr_path TEXT;" 2>/dev/null
+    echo "$cols" | grep -qx 'status' || sqlite3 "$db" "ALTER TABLE clients ADD COLUMN status TEXT DEFAULT 'active';" 2>/dev/null
+}
+
 # Initialize database
 init_database() {
     if [[ ! -f "$CONFIG_DIR/clients.db" ]]; then
@@ -168,6 +248,7 @@ CREATE TABLE IF NOT EXISTS clients (
     uuid TEXT NOT NULL,
     port INTEGER NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    status TEXT DEFAULT 'active',
     config_path TEXT,
     url TEXT,
     qr_path TEXT
@@ -175,11 +256,43 @@ CREATE TABLE IF NOT EXISTS clients (
 SQL
         log "INFO" "База данных клиентов инициализирована"
     fi
+    migrate_clients_db
+}
+
+# Входящий TCP на порты VLESS (иначе с клиента: i/o timeout к IP:порт)
+# При активном UFW правила нужно добавлять через «ufw allow», иначе ufw reload затирает ручной iptables -I INPUT
+setup_vless_input_firewall() {
+    local vmin=$VLESS_PORT_MIN vmax=$VLESS_PORT_MAX
+
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qiE 'Status:\s+active'; then
+        if ufw status 2>/dev/null | grep -qE "${vmin}:${vmax}/tcp|${vmin}:${vmax}"; then
+            log "INFO" "ufw: порты ${vmin}-${vmax}/tcp уже разрешены"
+        else
+            ufw allow "${vmin}:${vmax}/tcp" comment 'vless-manager' 2>/dev/null || \
+            ufw allow "${vmin}:${vmax}/tcp" 2>/dev/null || true
+            log "INFO" "ufw: разрешён TCP ${vmin}-${vmax} (VLESS). Проверка: ufw status numbered"
+        fi
+        return 0
+    fi
+
+    if ! command -v iptables >/dev/null 2>&1; then
+        return 0
+    fi
+    if ! iptables -C INPUT -p tcp --dport "${vmin}:${vmax}" -j ACCEPT 2>/dev/null; then
+        iptables -I INPUT 1 -p tcp --dport "${vmin}:${vmax}" -j ACCEPT 2>/dev/null || \
+        iptables -I INPUT -p tcp --dport "${vmin}:${vmax}" -j ACCEPT 2>/dev/null || true
+        log "INFO" "iptables INPUT: TCP ${vmin}-${vmax} (VLESS), UFW выключен"
+    fi
+    if [[ -d /etc/iptables ]] && [[ -w /etc/iptables/rules.v4 ]]; then
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+    fi
 }
 
 # Setup enhanced iptables for all interfaces
 setup_enhanced_iptables() {
     echo -e "${YELLOW}Настройка расширенных правил iptables...${NC}"
+    
+    setup_vless_input_firewall
     
     # Основные правила
     iptables -I FORWARD -j ACCEPT 2>/dev/null || true
@@ -237,6 +350,163 @@ extract_port_from_config() {
     fi
 }
 
+# TLS: самоподпись на клиента (IP в CN) или общий Let's Encrypt из $TLS_ENV
+generate_client_tls_cert() {
+    local server_ip="$1"
+    local client_name="$2"
+    load_tls_env
+    if tls_uses_letsencrypt; then
+        echo -e "${GREEN}TLS: используется Let's Encrypt (${PUBLIC_HOST})${NC}"
+        return 0
+    fi
+    local key="$CERT_DIR/${client_name}.key"
+    local crt="$CERT_DIR/${client_name}.crt"
+    mkdir -p "$CERT_DIR"
+    if ! command -v openssl >/dev/null 2>&1; then
+        echo -e "${RED}Нужен openssl (apt-get install -y openssl)${NC}"
+        return 1
+    fi
+    if ! openssl req -x509 -nodes -newkey rsa:4096 -keyout "$key" -out "$crt" -days 8250 \
+        -subj "/CN=${server_ip}" \
+        -addext "subjectAltName=IP:${server_ip}" 2>/dev/null; then
+        openssl req -x509 -nodes -newkey rsa:4096 -keyout "$key" -out "$crt" -days 8250 \
+            -subj "/CN=${server_ip}"
+    fi
+    chmod 600 "$key" 2>/dev/null || true
+    chmod 644 "$crt" 2>/dev/null || true
+    if [[ ! -f "$crt" || ! -f "$key" ]]; then
+        echo -e "${RED}Не удалось создать TLS-сертификат${NC}"
+        return 1
+    fi
+    return 0
+}
+
+# Subscription URL: голый TCP | WS+TLS (старые) | TCP+TLS (текущий)
+build_vless_url_from_config() {
+    local config_file="$1"
+    local client_name="$2"
+    local uuid port connect_host sni insecure_q
+    uuid=$(extract_uuid_from_config "$config_file")
+    port=$(extract_port_from_config "$config_file")
+    if [[ -z "$uuid" || -z "$port" ]]; then
+        return 1
+    fi
+    load_tls_env
+    connect_host=$(get_public_host)
+    sni="$connect_host"
+    if tls_uses_letsencrypt; then
+        insecure_q="allowInsecure=0"
+    else
+        insecure_q="allowInsecure=1"
+    fi
+    local path_enc
+    path_enc=$(printf '%s' "$VLESS_WS_PATH" | sed 's|/|%2F|g')
+    if grep -qE '"network":\s*"ws"' "$config_file" 2>/dev/null; then
+        echo "vless://${uuid}@${connect_host}:${port}?encryption=none&security=tls&sni=${sni}&fp=chrome&type=ws&host=${connect_host}&path=${path_enc}&${insecure_q}#${client_name}"
+    elif grep -qE '"network":\s*"tcp"' "$config_file" 2>/dev/null && grep -q '"security": "tls"' "$config_file" 2>/dev/null; then
+        echo "vless://${uuid}@${connect_host}:${port}?encryption=none&security=tls&sni=${sni}&fp=chrome&type=tcp&${insecure_q}#${client_name}"
+    else
+        echo "vless://${uuid}@${connect_host}:${port}?encryption=none&security=none&type=tcp#${client_name}"
+    fi
+}
+
+# Готовый профиль sing-box / NekoBox: legacy DNS (tcp:// через прокси), TLS + xudp; Instagram/приложения — без DoH-шума
+write_singbox_client_bundle() {
+    local client_name="$1" uuid="$2" port="$3" server_ip="$4"
+    local out="$BUNDLE_DIR/${client_name}.sing-box.json"
+    local cfg="$CLIENT_DIR/${client_name}.json"
+    mkdir -p "$BUNDLE_DIR"
+    if ! command -v python3 >/dev/null 2>&1; then
+        log "WARN" "python3 не найден — профиль sing-box не создан"
+        return 1
+    fi
+    CLIENT_NAME="$client_name" UUID="$uuid" PORT="$port" SERVER_IP="$server_ip" CFG_PATH="$cfg" OUT_PATH="$out" python3 << 'PY'
+import json, os, re
+
+name = os.environ["CLIENT_NAME"]
+uuid = os.environ["UUID"]
+port = int(os.environ["PORT"])
+sip = os.environ["SERVER_IP"]
+cfg_path = os.environ["CFG_PATH"]
+out_path = os.environ["OUT_PATH"]
+
+raw = ""
+if os.path.isfile(cfg_path):
+    with open(cfg_path, encoding="utf-8") as f:
+        raw = f.read()
+
+use_tls = bool(re.search(r'"network"\s*:\s*"ws"', raw)) or (
+    bool(re.search(r'"network"\s*:\s*"tcp"', raw)) and bool(re.search(r'"security"\s*:\s*"tls"', raw))
+)
+ws = bool(re.search(r'"network"\s*:\s*"ws"', raw))
+ws_path = "/vless"
+if ws:
+    m = re.search(r'"path"\s*:\s*"([^"]*)"', raw)
+    if m:
+        ws_path = m.group(1)
+
+proxy = {
+    "type": "vless",
+    "tag": "proxy",
+    "server": sip,
+    "server_port": port,
+    "uuid": uuid,
+    "packet_encoding": "xudp",
+}
+if use_tls:
+    proxy["tls"] = {
+        "enabled": True,
+        "server_name": sip,
+        "insecure": True,
+        "alpn": ["http/1.1"],
+    }
+
+if ws:
+    proxy["transport"] = {
+        "type": "ws",
+        "path": ws_path,
+        "headers": {"Host": sip},
+    }
+
+doc = {
+    "log": {"level": "warning"},
+    "dns": {
+        "servers": [
+            {
+                "tag": "dns-remote",
+                "address": "tcp://8.8.8.8",
+                "detour": "proxy",
+            },
+            {"tag": "local", "address": "local"},
+        ],
+        "final": "dns-remote",
+        "strategy": "prefer_ipv4",
+        "independent_cache": True,
+    },
+    "inbounds": [
+        {
+            "type": "mixed",
+            "tag": "mixed-in",
+            "listen": "127.0.0.1",
+            "listen_port": 2080,
+            "sniff": True,
+            "sniff_override_destination": True,
+        }
+    ],
+    "outbounds": [{"type": "direct", "tag": "direct"}, proxy],
+    "route": {"final": "proxy", "auto_detect_interface": True},
+}
+
+with open(out_path, "w", encoding="utf-8") as f:
+    json.dump(doc, f, indent=2, ensure_ascii=False)
+PY
+    if [[ $? -ne 0 ]]; then
+        log "WARN" "Не удалось записать sing-box профиль: $out"
+        return 1
+    fi
+    python3 -c "import json; json.load(open('$out'))" 2>/dev/null || log "WARN" "Проверьте JSON: $out"
+}
+
 # Rebuild database from existing configs
 rebuild_database() {
     clear
@@ -257,11 +527,12 @@ rebuild_database() {
             
             if [[ -n "$uuid" && -n "$port" ]]; then
                 # Создаем URL
-                local server_ip=$(get_server_ip)
-                local vless_url="vless://${uuid}@${server_ip}:${port}?encryption=none&security=none&type=tcp#${client_name}"
+                local vless_url
+                vless_url=$(build_vless_url_from_config "$config_file" "$client_name")
                 
                 # Сохраняем URL в файл
                 echo "$vless_url" > "$CONFIG_DIR/urls/${client_name}.txt"
+                write_singbox_client_bundle "$client_name" "$uuid" "$port" "$(get_public_host)"
                 
                 # Генерируем QR-код
                 local qr_path=""
@@ -378,13 +649,17 @@ show_client_details() {
         fi
     fi
     
-    # Если данных в базе нет, извлекаем из файлов
-    if [[ -z "$uuid" ]]; then
-        local config_file="$CLIENT_DIR/${client_name}.json"
+    # URL из файла подписки (актуальнее БД)
+    if [[ -f "$CONFIG_DIR/urls/${client_name}.txt" ]]; then
+        vless_url=$(cat "$CONFIG_DIR/urls/${client_name}.txt")
+    fi
+    local config_file="$CLIENT_DIR/${client_name}.json"
+    if [[ -z "$uuid" && -f "$config_file" ]]; then
         uuid=$(extract_uuid_from_config "$config_file")
         port=$(extract_port_from_config "$config_file")
-        local server_ip=$(get_server_ip)
-        vless_url="vless://${uuid}@${server_ip}:${port}?encryption=none&security=none&type=tcp#${client_name}"
+    fi
+    if [[ -z "$vless_url" && -f "$config_file" ]]; then
+        vless_url=$(build_vless_url_from_config "$config_file" "$client_name")
     fi
     
     if [[ -n "$uuid" && -n "$port" ]]; then
@@ -481,6 +756,10 @@ delete_config_menu() {
         rm -f "$CLIENT_DIR/${client_name}.json"
         rm -f "$CONFIG_DIR/urls/${client_name}.txt"
         rm -f "$QR_DIR/${client_name}.png"
+        if ! tls_uses_letsencrypt; then
+            rm -f "$CERT_DIR/${client_name}.crt" "$CERT_DIR/${client_name}.key"
+        fi
+        rm -f "$BUNDLE_DIR/${client_name}.sing-box.json"
         
         # Удаляем из базы
         if [[ -f "$CONFIG_DIR/clients.db" ]]; then
@@ -716,7 +995,7 @@ create_vless_config() {
     
     local uuid port server_ip
     uuid=$(generate_uuid)
-    port=$(find_free_port 10000 20000)
+    port=$(find_free_port "$VLESS_PORT_MIN" "$VLESS_PORT_MAX")
     server_ip=$(get_server_ip)
     
     if [[ "$port" == "0" ]]; then
@@ -724,11 +1003,40 @@ create_vless_config() {
         return 1
     fi
     
-    # Create Xray config
+    echo -e "${YELLOW}Генерация TLS для VLESS поверх TCP (стабильнее WebSocket в клиентах)...${NC}"
+    if ! generate_client_tls_cert "$server_ip" "$client_name"; then
+        return 1
+    fi
+    
+    local cert_file key_file
+    load_tls_env
+    if tls_uses_letsencrypt; then
+        cert_file="$LE_FULLCHAIN"
+        key_file="$LE_PRIVKEY"
+    else
+        cert_file="$CERT_DIR/${client_name}.crt"
+        key_file="$CERT_DIR/${client_name}.key"
+    fi
+    
+    local public_host
+    public_host=$(get_public_host)
+    
+    # VLESS + TCP + TLS + DNS/IPv4/sniffing (без WebSocket — меньше сбоев в v2rayNG/Nekoray)
     cat > "$CLIENT_DIR/${client_name}.json" << EOF
 {
+  "log": {
+    "loglevel": "info"
+  },
+  "dns": {
+    "servers": [
+      "8.8.8.8",
+      "1.1.1.1"
+    ],
+    "queryStrategy": "UseIPv4"
+  },
   "inbounds": [
     {
+      "listen": "0.0.0.0",
       "port": $port,
       "protocol": "vless",
       "settings": {
@@ -738,35 +1046,57 @@ create_vless_config() {
             "email": "${client_name}@vless.local"
           }
         ],
-        "decryption": "none"
+        "decryption": "none",
+        "packetEncoding": "xudp"
       },
       "streamSettings": {
-        "network": "tcp"
+        "network": "tcp",
+        "security": "tls",
+        "tlsSettings": {
+          "certificates": [
+            {
+              "certificateFile": "$cert_file",
+              "keyFile": "$key_file"
+            }
+          ],
+          "minVersion": "1.2",
+          "maxVersion": "1.3",
+          "alpn": ["http/1.1"]
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": ["http", "tls", "quic"],
+        "metadataOnly": false
       }
     }
   ],
   "outbounds": [
     {
       "protocol": "freedom",
-      "settings": {},
+      "settings": {
+        "domainStrategy": "UseIPv4"
+      },
       "tag": "direct"
     }
   ],
   "routing": {
+    "domainStrategy": "IPIfNonMatch",
     "rules": [
       {
-        "type": "field", 
-        "outboundTag": "direct",
-        "network": "tcp,udp"
+        "type": "field",
+        "network": "tcp,udp",
+        "outboundTag": "direct"
       }
     ]
   }
 }
 EOF
     
-    # Create VLESS URL
-    local vless_url="vless://${uuid}@${server_ip}:${port}?encryption=none&security=none&type=tcp#${client_name}"
+    local vless_url
+    vless_url=$(build_vless_url_from_config "$CLIENT_DIR/${client_name}.json" "$client_name")
     echo "$vless_url" > "$CONFIG_DIR/urls/${client_name}.txt"
+    write_singbox_client_bundle "$client_name" "$uuid" "$port" "$public_host"
     
     # Generate QR code
     local qr_path=""
@@ -796,7 +1126,7 @@ EOF
     echo -e "${CYAN}║ Клиент: $client_name${NC}"
     echo -e "${CYAN}║ UUID: $uuid${NC}"
     echo -e "${CYAN}║ Порт: $port${NC}"
-    echo -e "${CYAN}║ IP сервера: $server_ip${NC}"
+    echo -e "${CYAN}║ Публичный IP: $server_ip | Адрес в ссылке: $public_host${NC}"
     echo -e "${GREEN}╠════════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${YELLOW}║ VLESS URL:${NC}"
     echo -e "${WHITE}║ $vless_url${NC}"
@@ -806,7 +1136,12 @@ EOF
     if [[ -n "$qr_path" ]]; then
         echo -e "${BLUE}║ QR-код: $qr_path${NC}"
     fi
+    echo -e "${BLUE}║ NekoBox/sing-box (с DNS «из коробки»): $BUNDLE_DIR/${client_name}.sing-box.json${NC}"
     echo -e "${GREEN}╚════════════════════════════════════════════════════════════════╝${NC}"
+    echo -e "${YELLOW}Подсказка: если при включении VPN «пропадает весь интернет» — в клиенте включите DNS${NC}"
+    echo -e "${YELLOW}через прокси (remote/8.8.8.8), на Android отключите Private DNS; адрес в ссылке = $server_ip${NC}"
+    echo -e "${YELLOW}Импорт в NekoBox: «Из файла» → $BUNDLE_DIR/${client_name}.sing-box.json (или QR URL). Шифрование: см. templates/ШИФРОВАНИЕ.txt${NC}"
+    echo -e "${YELLOW}Если таймаут до $server_ip:$port — откройте TCP $port в панели облака; см. templates/FIREWALL-HINT.txt${NC}"
     
     # Display QR in terminal
     echo
@@ -858,6 +1193,7 @@ main() {
     ensure_root
     setup_directories
     check_dependencies
+    init_database
     
     log "INFO" "VLESS Manager v1.3 запущен (QR Codes & Network Enhancement)"
     log "INFO" "Версия: 1.3 | Автор: AKUMA0xDEAD"
