@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Клиент на ноде: {{ username }}</h2>
+{% if flash_err %}<div class="alert alert-error">{{ flash_err }}</div>{% endif %}
+<p style="color:var(--muted)">Каталог master: <a href="{{ master_proxy_url }}" target="_blank" rel="noopener">{{ master_proxy_url }}</a></p>
+
+{% if urls.hysteria_url %}
+<div class="card">
+  <h3 style="margin-top:0">★ LTE — Hysteria2</h3>
+  <div class="url-box">{{ urls.hysteria_url }}</div>
+  {% if qr_mobile %}<div class="qr-row"><img src="/qr/{{ qr_mobile }}" alt="QR"></div>{% endif %}
+</div>
+{% endif %}
+
+{% if urls.mobile_vless_url %}
+<div class="card">
+  <h3 style="margin-top:0">LTE — VLESS REALITY</h3>
+  <div class="url-box">{{ urls.mobile_vless_url }}</div>
+</div>
+{% endif %}
+
+{% if urls.wifi_vless_url %}
+<div class="card">
+  <h3 style="margin-top:0">Wi‑Fi — VLESS TLS{% if wifi_port %} :{{ wifi_port }}{% endif %}</h3>
+  <div class="url-box">{{ urls.wifi_vless_url }}</div>
+  {% if qr_wifi %}<div class="qr-row"><img src="/qr/{{ qr_wifi }}" alt="QR"></div>{% endif %}
+</div>
+{% endif %}
+
+<div class="form-actions">
+  <a href="/proxy" class="btn btn-cyan">← К списку</a>
+  <form method="post" action="/proxy/local/{{ username }}/delete" onsubmit="return confirm('Удалить {{ username }} на ноде и в master?');">
+    {% include "csrf_input.html" %}
+    <button type="submit" class="btn btn-red">Удалить</button>
+  </form>
+</div>
+{% endblock %}

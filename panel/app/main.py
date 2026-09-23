@@ -28,7 +28,12 @@ from app.config import (
     VLESS_CONFIG_DIR,
     is_agent_panel,
 )
-from app.services.local_clients import list_local_vless_clients
+from app.services.local_clients import (
+    count_grouped_local_clients,
+    list_grouped_local_clients,
+    load_local_client_urls,
+    local_qr_filenames,
+)
 from app.database import Base, engine, get_db
 from app.deps import create_session_token, get_current_admin, get_optional_admin
 from app.migrate import run_migrations
@@ -50,6 +55,7 @@ from app.services.cert_actions import (
 )
 from app.services.certs import all_cert_status
 from app.services.settings import get_settings
+from app.services.master_sync import master_unregister_proxy_user
 from app.services.master_url import get_master_public_url
 from app.services.nodes_helpers import node_vpn_host
 from app.services.ports import port_status
@@ -59,6 +65,7 @@ from app.services.provision import (
     delete_remote_client,
     provision_local,
     provision_remote,
+    ensure_qr_codes_for_user,
     qr_png_path,
     reconcile_wifi_servers,
 )
@@ -229,7 +236,11 @@ def dashboard(
     db: Session = Depends(get_db),
 ):
     nodes = db.query(Node).filter(Node.is_active.is_(True)).order_by(Node.name).all()
-    users_count = db.query(ProxyUser).count()
+    master_url = get_master_public_url(request)
+    if is_agent_panel():
+        users_count = count_grouped_local_clients()
+    else:
+        users_count = db.query(ProxyUser).count()
     cert_data = all_cert_status()
     min_days = None
     for c in cert_data["certificates"]:
@@ -249,6 +260,8 @@ def dashboard(
             "users_count": users_count,
             "cert_min_days": min_days,
             "cert_checked": cert_data["checked_at"],
+            "is_agent": is_agent_panel(),
+            "master_proxy_url": f"{master_url.rstrip('/')}/proxy",
         },
     )
 
@@ -485,10 +498,10 @@ def proxy_list(
                 "nodes": [],
                 "users": [],
                 "error": flash_err,
-                "flash_ok": flash_ok,
+                "flash_ok": flash_ok or request.query_params.get("msg"),
                 "is_agent": True,
                 "master_proxy_url": f"{master.rstrip('/')}/proxy",
-                "local_clients": list_local_vless_clients(),
+                "local_clients": list_grouped_local_clients(),
             },
         )
     return templates.TemplateResponse(
@@ -500,7 +513,7 @@ def proxy_list(
             "nodes": nodes,
             "users": users,
             "error": flash_err,
-            "flash_ok": flash_ok,
+            "flash_ok": flash_ok or request.query_params.get("msg"),
             "is_agent": False,
             "local_clients": [],
         },
@@ -531,7 +544,7 @@ async def proxy_create(
                 "error": f"На agent-ноде клиентов не создают. Откройте master: {master}/proxy",
                 "is_agent": True,
                 "master_proxy_url": f"{master.rstrip('/')}/proxy",
-                "local_clients": list_local_vless_clients(),
+                "local_clients": list_grouped_local_clients(),
             },
             status_code=400,
         )
@@ -645,7 +658,82 @@ async def proxy_create(
     db.add(pu)
     db.commit()
     db.refresh(pu)
+    ensure_qr_codes_for_user(
+        uname,
+        wifi_vless_url=result.wifi_vless_url,
+        mobile_vless_url=result.mobile_vless_url,
+        hysteria_url=result.hysteria_url,
+        has_wifi=do_wifi,
+        has_mobile=do_mobile,
+    )
     return RedirectResponse(f"/proxy/{pu.id}", status_code=303)
+
+
+@app.get("/proxy/local/{username}", response_class=HTMLResponse)
+def agent_proxy_local_view(
+    username: str,
+    request: Request,
+    admin: AdminUser = Depends(get_current_admin),
+):
+    if not is_agent_panel():
+        raise HTTPException(404)
+    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$", username):
+        raise HTTPException(400)
+    urls = load_local_client_urls(username)
+    if not urls:
+        raise HTTPException(404, "Конфиг не найден на ноде")
+    qr_wifi, qr_mobile = local_qr_filenames(username)
+    master = get_master_public_url(request)
+    grouped = {g["username"]: g for g in list_grouped_local_clients()}
+    g = grouped.get(username) or {}
+    return templates.TemplateResponse(
+        "agent_proxy_local.html",
+        {
+            "request": request,
+            "title": APP_TITLE,
+            "admin": admin,
+            "username": username,
+            "urls": urls,
+            "qr_wifi": qr_wifi,
+            "qr_mobile": qr_mobile,
+            "wifi_port": g.get("wifi_port"),
+            "master_proxy_url": f"{master.rstrip('/')}/proxy",
+            "flash_err": request.query_params.get("err"),
+        },
+    )
+
+
+@app.post("/proxy/local/{username}/delete")
+async def agent_proxy_local_delete(
+    username: str,
+    admin: AdminUser = Depends(get_current_admin),
+    _: None = Depends(require_form_csrf),
+):
+    if not is_agent_panel():
+        raise HTTPException(404)
+    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$", username):
+        raise HTTPException(400)
+    urls = load_local_client_urls(username)
+    has_wifi = bool(urls.get("wifi_vless_url"))
+    has_mobile = bool(urls.get("mobile_vless_url") or urls.get("hysteria_url"))
+    result = await asyncio.to_thread(
+        delete_local_client,
+        username,
+        wifi=has_wifi,
+        mobile=has_mobile,
+    )
+    if not result.ok:
+        return RedirectResponse(
+            f"/proxy/local/{username}?err={quote(result.message[:180])}",
+            status_code=303,
+        )
+    ok_m, msg_m = await master_unregister_proxy_user(username)
+    flash = "Удалено на ноде"
+    if ok_m:
+        flash += " и в master"
+    else:
+        flash += f"; master: {msg_m[:120]}"
+    return RedirectResponse(f"/proxy?msg={quote(flash)}", status_code=303)
 
 
 @app.get("/proxy/{user_id}", response_class=HTMLResponse)
@@ -660,6 +748,14 @@ def proxy_detail(
         raise HTTPException(404)
     node = db.get(Node, pu.node_id)
     mob_name = f"{pu.username}-mob" if pu.has_wifi and pu.has_mobile else pu.username
+    ensure_qr_codes_for_user(
+        pu.username,
+        wifi_vless_url=pu.wifi_vless_url,
+        mobile_vless_url=pu.mobile_vless_url,
+        hysteria_url=pu.hysteria_url,
+        has_wifi=pu.has_wifi,
+        has_mobile=pu.has_mobile,
+    )
     qr_wifi = qr_png_path(pu.username, "wifi")
     qr_mobile = qr_png_path(mob_name, "mobile")
     flash_err = request.query_params.get("err")
@@ -1035,6 +1131,28 @@ def api_agent_next_job(request: Request, db: Session = Depends(get_db)):
         "has_wifi": job.has_wifi,
         "has_mobile": job.has_mobile,
     }
+
+
+@app.post("/api/v1/agent/unregister-proxy-user")
+async def api_agent_unregister_proxy_user(
+    request: Request, db: Session = Depends(get_db)
+):
+    node = _agent_node_from_request(request, db)
+    if not node:
+        raise HTTPException(403, "Invalid agent token")
+    body = await request.json()
+    username = (body.get("username") or "").strip()
+    if not username:
+        raise HTTPException(400, "username required")
+    pu = (
+        db.query(ProxyUser)
+        .filter(ProxyUser.node_id == node.id, ProxyUser.username == username)
+        .first()
+    )
+    if pu:
+        db.delete(pu)
+        db.commit()
+    return {"ok": True, "removed": bool(pu)}
 
 
 @app.post("/api/v1/agent/job-result")

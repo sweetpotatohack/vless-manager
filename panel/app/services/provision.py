@@ -284,6 +284,48 @@ async def delete_remote_client(
         return ProvisionResult(False, str(e))
 
 
+def write_qr_png(content: str, dest: Path) -> bool:
+    if not content.strip():
+        return False
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        r = subprocess.run(
+            ["qrencode", "-s", "8", "-o", str(dest), content.strip()],
+            capture_output=True,
+            timeout=30,
+        )
+        if r.returncode == 0 and dest.is_file():
+            return True
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    try:
+        import qrcode
+
+        img = qrcode.make(content.strip())
+        img.save(dest)
+        return dest.is_file()
+    except Exception:
+        return False
+
+
+def ensure_qr_codes_for_user(
+    username: str,
+    *,
+    wifi_vless_url: str | None,
+    mobile_vless_url: str | None,
+    hysteria_url: str | None,
+    has_wifi: bool,
+    has_mobile: bool,
+) -> None:
+    mob_name = f"{username}-mob" if has_wifi and has_mobile else username
+    if has_wifi and wifi_vless_url:
+        write_qr_png(wifi_vless_url, QR_DIR / f"{username}.png")
+    if has_mobile:
+        qr_url = hysteria_url or mobile_vless_url
+        if qr_url:
+            write_qr_png(qr_url, QR_DIR / f"{mob_name}.png")
+
+
 def qr_png_path(username: str, kind: str = "wifi") -> Path | None:
     base = username if kind == "wifi" else f"{username}-mob"
     if kind == "mobile" and not (QR_DIR / f"{base}.png").is_file():

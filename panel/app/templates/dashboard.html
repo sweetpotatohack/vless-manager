@@ -37,8 +37,18 @@
     {% endfor %}
     </tbody>
   </table>
-  <p style="margin-top:1rem"><a href="/proxy" class="btn btn-blue">Выдать конфиг клиенту</a></p>
+  <p style="margin-top:1rem">
+    {% if is_agent %}
+    <a href="{{ master_proxy_url }}" class="btn btn-blue" target="_blank" rel="noopener">Выдать конфиг (master)</a>
+    <a href="/proxy" class="btn btn-cyan">Клиенты на этой ноде</a>
+    {% else %}
+    <a href="/proxy" class="btn btn-blue">Выдать конфиг клиенту</a>
+    {% endif %}
+  </p>
 </div>
+{% if is_agent %}
+<p class="hint">Счётчик «Клиентов» — Wi‑Fi/LTE на этой машине. Полный каталог всех нод — на master.</p>
+{% endif %}
 
 <p style="color:var(--muted);font-size:0.85rem">Проверка сертификатов: {{ cert_checked.strftime('%Y-%m-%d %H:%M UTC') }} · <a href="/certs">подробнее</a></p>
 {% endblock %}
