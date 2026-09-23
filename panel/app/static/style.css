@@ -410,6 +410,7 @@ tr.row-active td { background: rgba(59, 130, 246, 0.06); }
   font-size: 0.88rem;
 }
 .info-strip strong { color: var(--cyan-bright); }
+.info-strip-part { white-space: nowrap; }
 
 .form-actions { display: flex; flex-wrap: wrap; gap: 0.65rem; margin-top: 0.5rem; }
 

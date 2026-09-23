@@ -16,21 +16,21 @@
     <input type="text" name="username" required placeholder="maks" autocomplete="off" minlength="1" maxlength="63">
 
     <label>2. Страна выхода</label>
-    <div class="info-strip" id="country-box">
-      <span>🌍</span>
-      <strong id="country-label">—</strong>
-      <span class="muted">IP</span>
-      <strong id="ip-label">—</strong>
+    <div class="info-strip" id="country-box" aria-live="polite">
+      <span aria-hidden="true">🌍</span>
+      <span class="info-strip-part"><span class="muted">Страна:</span> <strong id="country-label">—</strong></span>
+      <span class="info-strip-part"><span class="muted">IP:</span> <strong id="ip-label">—</strong></span>
     </div>
+    <p class="hint">Меняется при выборе ноды в п. 3.</p>
 
     <label>3. Нода (сервер)</label>
     <select name="node_id" id="node-select" required>
       <option value="">— выберите ноду —</option>
       {% for n in nodes %}
       <option value="{{ n.id }}"
-        data-country="{{ n.country or n.region }}"
-        data-ip="{{ n.public_ip or '' }}"
-        data-domain="{{ n.domain }}">
+        data-country="{{ (n.country or n.region or '—')|e }}"
+        data-ip="{{ (n.public_ip or n.domain or '—')|e }}"
+        data-domain="{{ n.domain|e }}">
         [{{ n.country or n.region }}] {{ n.public_ip or '?' }} — {{ n.name }}
       </option>
       {% endfor %}
@@ -71,29 +71,5 @@
   </table>
 </div>
 
-<script>
-const sel = document.getElementById('node-select');
-const countryLabel = document.getElementById('country-label');
-const ipLabel = document.getElementById('ip-label');
-function syncNode() {
-  const o = sel.selectedOptions[0];
-  if (!o || !o.value) {
-    countryLabel.textContent = '—';
-    ipLabel.textContent = '—';
-    return;
-  }
-  countryLabel.textContent = o.dataset.country || '—';
-  ipLabel.textContent = o.dataset.ip || 'после регистрации агента';
-}
-sel?.addEventListener('change', syncNode);
-if (sel && sel.options.length === 2) { sel.selectedIndex = 1; syncNode(); }
-else { syncNode(); }
-
-document.getElementById('proxy-form')?.addEventListener('submit', () => {
-  document.getElementById('wait-hint').style.display = 'block';
-  const btn = document.getElementById('submit-btn');
-  btn.disabled = true;
-  btn.textContent = 'Генерация…';
-});
-</script>
+<script src="/static/proxy.js?v=1"></script>
 {% endblock %}
