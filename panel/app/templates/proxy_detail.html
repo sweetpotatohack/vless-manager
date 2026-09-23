@@ -8,7 +8,7 @@
 <p style="color:var(--muted)">
   Нода: {{ node.name }} · {{ node.domain }} ·
   выход: <strong>{{ user.exit_country or node.country }}</strong>,
-  IP <strong>{{ user.exit_ip or node.public_ip }}</strong>
+  DNS <strong>{{ node_vpn_host(node) or user.exit_ip }}</strong>
 </p>
 
 {% if user.hysteria_url %}

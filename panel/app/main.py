@@ -49,6 +49,7 @@ from app.services.cert_actions import (
 from app.services.certs import all_cert_status
 from app.services.settings import get_settings
 from app.services.master_url import get_master_public_url
+from app.services.nodes_helpers import node_vpn_host
 from app.services.ports import port_status
 from app.services.provision import (
     ProvisionResult,
@@ -75,6 +76,7 @@ REPO_PANEL = APP_DIR.parent
 REPO_ROOT = REPO_PANEL.parent
 templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
 templates.env.autoescape = True
+templates.env.globals["node_vpn_host"] = node_vpn_host
 
 app = FastAPI(title=APP_TITLE)
 app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
@@ -329,8 +331,14 @@ def nodes_generate_agent(
     _: None = Depends(require_form_csrf),
     name: str = Form(...),
     country: str = Form(...),
-    domain: str = Form(""),
+    domain: str = Form(...),
 ):
+    domain = domain.strip().lower()
+    if not domain or domain.endswith(".local"):
+        return RedirectResponse(
+            "/nodes?err=" + quote("Укажите DNS домен VPN (A/AAAA на IP ноды)"),
+            status_code=303,
+        )
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:60] or secrets.token_hex(4)
     if db.query(Node).filter(Node.slug == slug).first():
         slug = f"{slug}-{secrets.token_hex(3)}"
@@ -338,7 +346,7 @@ def nodes_generate_agent(
     node = Node(
         name=name.strip(),
         slug=slug,
-        domain=(domain.strip() or f"{slug}.local"),
+        domain=domain,
         region=country.strip(),
         country=country.strip(),
         public_ip="",
@@ -431,8 +439,11 @@ def proxy_list(
     )
     if not nodes:
         nodes = db.query(Node).filter(Node.is_active.is_(True)).order_by(Node.name).all()
+    from sqlalchemy.orm import joinedload
+
     users = (
         db.query(ProxyUser)
+        .options(joinedload(ProxyUser.node))
         .order_by(ProxyUser.created_at.desc())
         .limit(100)
         .all()
@@ -569,7 +580,7 @@ async def proxy_create(
         wifi_port=result.wifi_port,
         uuid=result.uuid,
         exit_country=node.country or node.region,
-        exit_ip=node.public_ip or "",
+        exit_ip=node_vpn_host(node),
     )
     db.add(pu)
     db.commit()
@@ -1028,8 +1039,11 @@ async def api_nodes_register(request: Request, db: Session = Depends(get_db)):
     if not node:
         raise HTTPException(404, "Unknown token")
     node.public_ip = (body.get("public_ip") or node.public_ip or "").strip()
-    if body.get("domain"):
-        node.domain = body["domain"].strip()
+    incoming_domain = (body.get("domain") or "").strip()
+    if incoming_domain:
+        placeholder = f"{node.slug}.local"
+        if not node.domain or node.domain.endswith(".local") or node.domain == placeholder:
+            node.domain = incoming_domain
     if body.get("country") and not node.country:
         node.country = body["country"].strip()
     api_base = (body.get("api_base") or "").strip()
@@ -1041,7 +1055,24 @@ async def api_nodes_register(request: Request, db: Session = Depends(get_db)):
     node.is_active = True
     node.last_seen = datetime.utcnow()
     db.commit()
-    return {"ok": True, "node_id": node.id, "name": node.name}
+    return {
+        "ok": True,
+        "node_id": node.id,
+        "name": node.name,
+        "vpn_domain": node.domain,
+    }
+
+
+@app.get("/api/v1/agent/node-config")
+def api_agent_node_config(request: Request, db: Session = Depends(get_db)):
+    node = _agent_node_from_request(request, db)
+    if not node:
+        raise HTTPException(403, "Invalid agent token")
+    return {
+        "vpn_domain": node.domain,
+        "country": node.country or node.region,
+        "name": node.name,
+    }
 
 
 @app.post("/api/v1/nodes/install-failed")

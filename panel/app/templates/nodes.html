@@ -36,10 +36,27 @@
     <input type="text" name="name" required placeholder="frankfurt-1">
     <label>Страна (для выбора в Proxy)</label>
     <input type="text" name="country" required placeholder="Germany / USA / Singapore">
-    <label>Домен VPN (можно позже, если ещё нет)</label>
-    <input type="text" name="domain" placeholder="vpn.example.com">
+    <label>Домен VPN (DNS в VLESS-ссылках и в Proxy)</label>
+    <input type="text" name="domain" required placeholder="proxy.example.com">
+    <p class="hint">A/AAAA этого имени → публичный IP ноды. После install agent подставит его в tls.env (PUBLIC_HOST).</p>
     <button type="submit" class="btn btn-cyan btn-lg">Сгенерировать агент</button>
   </form>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0">Порты на agent-ноде (firewall / проброс)</h3>
+  <table>
+    <thead><tr><th>Порт</th><th>Назначение</th></tr></thead>
+    <tbody>
+      <tr><td><code>8765/tcp</code></td><td>Панель/API agent (исходящий HTTPS к master достаточен для provision; порт — для диагностики)</td></tr>
+      <tr><td><code>8766/tcp</code></td><td>HTTP fallback панели agent</td></tr>
+      <tr><td><code>25000–45000/tcp</code></td><td>Wi‑Fi VLESS (inbound на каждого клиента)</td></tr>
+      <tr><td><code>443/tcp</code></td><td>LTE — VLESS REALITY</td></tr>
+      <tr><td><code>25001/udp</code></td><td>LTE — Hysteria2</td></tr>
+      <tr><td><code>80/tcp</code></td><td>Let's Encrypt (certbot), если выпускаете LE на agent</td></tr>
+    </tbody>
+  </table>
+  <p class="hint">С master до agent по LAN IP ходить не нужно: конфиги создаются через очередь (agent → master). Клиентам VPN нужны DNS ноды и открытые порты выше.</p>
 </div>
 
 <div class="card">

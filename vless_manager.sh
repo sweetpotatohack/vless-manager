@@ -2184,8 +2184,31 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                 delete_vless_client "$name" "$wifi_flag" "$mobile_flag"
                 exit $?
                 ;;
+            set-public-host)
+                [[ -n "$name" ]] || { echo "usage: cli set-public-host DOMAIN" >&2; exit 2; }
+                umask 077
+                mkdir -p "$CONFIG_DIR"
+                if [[ -f "$TLS_ENV" ]]; then
+                    if grep -q '^PUBLIC_HOST=' "$TLS_ENV"; then
+                        sed -i "s/^PUBLIC_HOST=.*/PUBLIC_HOST=${name}/" "$TLS_ENV"
+                    else
+                        echo "PUBLIC_HOST=${name}" >> "$TLS_ENV"
+                    fi
+                else
+                    cat > "$TLS_ENV" << EOF
+TLS_MODE=selfsigned
+PUBLIC_HOST=${name}
+LE_FULLCHAIN=
+LE_PRIVKEY=
+LE_EMAIL=
+EOF
+                    chmod 600 "$TLS_ENV"
+                fi
+                echo "PUBLIC_HOST=${name} (VLESS/Hysteria ссылки)"
+                exit 0
+                ;;
             *)
-                echo "usage: $0 cli create-wifi|create-mobile|delete-client NAME" >&2
+                echo "usage: $0 cli create-wifi|create-mobile|delete-client|set-public-host ..." >&2
                 exit 2
                 ;;
         esac

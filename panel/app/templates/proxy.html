@@ -19,7 +19,7 @@
     <div class="info-strip" id="country-box" aria-live="polite">
       <span aria-hidden="true">🌍</span>
       <span class="info-strip-part"><span class="muted">Страна:</span> <strong id="country-label">—</strong></span>
-      <span class="info-strip-part"><span class="muted">IP:</span> <strong id="ip-label">—</strong></span>
+      <span class="info-strip-part"><span class="muted">DNS:</span> <strong id="ip-label">—</strong></span>
     </div>
     <p class="hint">Меняется при выборе ноды в п. 3.</p>
 
@@ -29,9 +29,9 @@
       {% for n in nodes %}
       <option value="{{ n.id }}"
         data-country="{{ (n.country or n.region or '—')|e }}"
-        data-ip="{{ (n.public_ip or n.domain or '—')|e }}"
+        data-ip="{{ (node_vpn_host(n) or '—')|e }}"
         data-domain="{{ n.domain|e }}">
-        [{{ n.country or n.region }}] {{ n.public_ip or '?' }} — {{ n.name }}
+        [{{ n.country or n.region }}] {{ node_vpn_host(n) or '?' }} — {{ n.name }}
       </option>
       {% endfor %}
     </select>
@@ -48,13 +48,13 @@
 <div class="card">
   <h3 style="margin-top:0">Последние клиенты</h3>
   <table>
-    <thead><tr><th>Имя</th><th>Страна</th><th>IP</th><th>Дата</th><th>Действия</th></tr></thead>
+    <thead><tr><th>Имя</th><th>Страна</th><th>DNS / выход</th><th>Дата</th><th>Действия</th></tr></thead>
     <tbody>
     {% for u in users %}
       <tr>
         <td>{{ u.username }}</td>
         <td>{{ u.exit_country or '—' }}</td>
-        <td>{{ u.exit_ip or '—' }}</td>
+        <td>{{ node_vpn_host(u.node) if u.node else (u.exit_ip or '—') }}</td>
         <td>{{ u.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
         <td class="form-actions" style="margin:0">
           <a href="/proxy/{{ u.id }}" class="btn btn-cyan" style="padding:0.35rem 0.65rem;font-size:0.62rem">Ссылки</a>

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import subprocess
 from pathlib import Path
 
 import httpx
@@ -40,6 +41,29 @@ def _read_agent_token() -> str:
     return ""
 
 
+async def _apply_vpn_domain_from_master(master: str, token: str) -> None:
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        async with httpx.AsyncClient(timeout=30.0, verify=True) as client:
+            resp = await client.get(f"{master}/api/v1/agent/node-config", headers=headers)
+            if resp.status_code >= 400:
+                return
+            domain = (resp.json().get("vpn_domain") or "").strip()
+            if not domain or domain.endswith(".local"):
+                return
+            mgr = os.environ.get("VLESS_MANAGER_SH", "/opt/vless-manager/vless_manager.sh")
+            await asyncio.to_thread(
+                subprocess.run,
+                ["/bin/bash", mgr, "cli", "set-public-host", domain],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+    except Exception as exc:
+        log.warning("set-public-host from master: %s", exc)
+
+
 async def _process_job(master: str, token: str, job: dict) -> dict:
     job_id = job["id"]
     job_type = job.get("job_type", "provision")
@@ -57,6 +81,7 @@ async def _process_job(master: str, token: str, job: dict) -> dict:
             "error_message": None if result.ok else result.message,
         }
 
+    await _apply_vpn_domain_from_master(master, token)
     result = await asyncio.to_thread(
         provision_local, username, wifi=wifi, mobile=mobile
     )
