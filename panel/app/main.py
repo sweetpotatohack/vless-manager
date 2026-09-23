@@ -869,6 +869,17 @@ def _bundle_paths() -> list[tuple[str, Path]]:
     return items
 
 
+@app.get("/api/v1/agent/admin-sync")
+def api_agent_admin_sync(token: str, db: Session = Depends(get_db)):
+    node = _node_by_agent_token(db, token)
+    if not node:
+        raise HTTPException(403, "Invalid token")
+    admin = db.query(AdminUser).order_by(AdminUser.id.asc()).first()
+    if not admin:
+        raise HTTPException(503, "Admin user not configured on master")
+    return {"username": admin.username, "password_hash": admin.password_hash}
+
+
 @app.get("/api/v1/agent/bundle.tar.gz")
 def api_agent_bundle(token: str, db: Session = Depends(get_db)):
     node = _node_by_agent_token(db, token)

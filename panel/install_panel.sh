@@ -118,21 +118,8 @@ systemctl enable vless-agent.service 2>/dev/null || true
 systemctl restart vless-panel.service
 
 sleep 1
-PYTHONPATH="$INSTALL_DIR" "$VENV/bin/python" << 'PY'
-from app.auth import hash_password
-from app.database import SessionLocal
-from app.models import AdminUser
-
-db = SessionLocal()
-admin = db.query(AdminUser).filter(AdminUser.username == "admin").first()
-if not admin:
-    db.add(AdminUser(username="admin", password_hash=hash_password("admin")))
-else:
-    admin.password_hash = hash_password("admin")
-db.commit()
-db.close()
-print("Admin: admin / admin")
-PY
+chmod +x "$INSTALL_DIR/scripts/sync_panel_admin.py" 2>/dev/null || true
+PYTHONPATH="$INSTALL_DIR" "$VENV/bin/python" "$INSTALL_DIR/scripts/sync_panel_admin.py"
 
 echo "=== VLESS Panel ==="
 echo "URL (HTTPS): https://$(hostname -f 2>/dev/null || echo 127.0.0.1):8765/login"
