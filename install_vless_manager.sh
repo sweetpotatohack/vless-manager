@@ -619,7 +619,8 @@ install_web_panel() {
     log_info "Web Control Panel / Agent API (systemd: vless-panel, vless-agent)..."
     export VLESS_PANEL_ROLE="$role"
     bash "$REPO_ROOT/panel/install_panel.sh"
-    log_info "Панель: https://$(hostname -f 2>/dev/null || echo 127.0.0.1):8765/login (HTTP fallback :8766)"
+    _panel_host="$(bash "$REPO_ROOT/panel/scripts/resolve_agent_panel_host.sh" 2>/dev/null || hostname -f 2>/dev/null || echo 127.0.0.1)"
+    log_info "Панель: https://${_panel_host}:8765/login (HTTP fallback :8766)"
 }
 
 remote_agent_install() {

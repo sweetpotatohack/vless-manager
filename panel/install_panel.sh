@@ -121,8 +121,19 @@ sleep 1
 chmod +x "$INSTALL_DIR/scripts/sync_panel_admin.py" 2>/dev/null || true
 PYTHONPATH="$INSTALL_DIR" "$VENV/bin/python" "$INSTALL_DIR/scripts/sync_panel_admin.py"
 
+PANEL_HOST="$(bash "$INSTALL_DIR/scripts/resolve_agent_panel_host.sh" 2>/dev/null || hostname -f 2>/dev/null || echo 127.0.0.1)"
 echo "=== VLESS Panel ==="
-echo "URL (HTTPS): https://$(hostname -f 2>/dev/null || echo 127.0.0.1):8765/login"
-echo "URL (HTTP fallback): http://$(hostname -f 2>/dev/null || echo 127.0.0.1):8766/login"
-echo "Логин: admin  Пароль: admin"
+if [[ "${PANEL_ROLE}" == "agent" && "$PANEL_HOST" != "$(hostname -f 2>/dev/null)" ]]; then
+  echo "URL (HTTPS, DNS VPN): https://${PANEL_HOST}:8765/login"
+  echo "URL (HTTP fallback): http://${PANEL_HOST}:8766/login"
+  echo "LAN: https://$(hostname -f 2>/dev/null || echo 127.0.0.1):8765/login"
+else
+  echo "URL (HTTPS): https://${PANEL_HOST}:8765/login"
+  echo "URL (HTTP fallback): http://${PANEL_HOST}:8766/login"
+fi
+if [[ "${PANEL_ROLE}" == "agent" ]]; then
+  echo "Логин: тот же, что на master-панели"
+else
+  echo "Логин: admin  Пароль: admin"
+fi
 systemctl --no-pager status vless-panel.service | head -5

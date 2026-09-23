@@ -78,6 +78,10 @@ VPN_DOMAIN="$(printf '%s' "$REG_RESP" | python3 -c "import json,sys; print(json.
 if [[ -n "$VPN_DOMAIN" && -f /opt/vless-manager/vless_manager.sh ]]; then
   echo "VLESS DNS (из панели master): $VPN_DOMAIN"
   bash /opt/vless-manager/vless_manager.sh cli set-public-host "$VPN_DOMAIN" || true
+  echo ""
+  echo "=== VLESS Panel (DNS из master) ==="
+  echo "URL (HTTPS): https://${{VPN_DOMAIN}}:8765/login"
+  echo "URL (HTTP fallback): http://${{VPN_DOMAIN}}:8766/login"
 fi
 
 echo ""
