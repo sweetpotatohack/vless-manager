@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block content %}
+<h2 class="page-title"><span class="title-accent">//</span> Личный кабинет</h2>
+
+{% if flash_ok %}
+<div class="alert alert-ok animate-in">{{ flash_ok }}</div>
+{% endif %}
+{% if flash_err %}
+<div class="alert alert-error animate-in">{{ flash_err }}</div>
+{% endif %}
+
+<div class="card card-glow">
+  <h3 class="card-title">Смена пароля</h3>
+  <form method="post" action="/profile/password">
+    <label>Текущий пароль</label>
+    <input type="password" name="current_password" required autocomplete="current-password">
+    <label>Новый пароль</label>
+    <input type="password" name="new_password" required autocomplete="new-password" minlength="6">
+    <label>Повтор нового</label>
+    <input type="password" name="new_password2" required autocomplete="new-password">
+    <button type="submit" class="btn btn-blue">Обновить пароль</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3 class="card-title">Оповещения (сертификаты / renew)</h3>
+  <form method="post" action="/profile/notifications">
+    <label>Telegram Bot Token</label>
+    <input type="text" name="telegram_bot_token" value="{{ settings.telegram_bot_token }}" placeholder="123456:ABC...">
+    <label>Telegram Chat ID</label>
+    <input type="text" name="telegram_chat_id" value="{{ settings.telegram_chat_id }}" placeholder="-100...">
+    <label>Email (локальный sendmail)</label>
+    <input type="email" name="notify_email" value="{{ settings.notify_email }}" placeholder="admin@example.com">
+    <label class="check-line">
+      <input type="checkbox" name="notify_on_cert" {% if settings.notify_on_cert %}checked{% endif %}>
+      Отправлять при операциях с сертификатами
+    </label>
+    <button type="submit" class="btn btn-cyan">Сохранить оповещения</button>
+  </form>
+</div>
+{% endblock %}

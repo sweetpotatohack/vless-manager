@@ -47,3 +47,10 @@ temp/
 # System files
 /var/log/vless-manager/
 /etc/vless-manager/clients/
+
+# Python panel
+panel/venv/
+panel/**/__pycache__/
+*.pyc
+panel.db
+secret.key

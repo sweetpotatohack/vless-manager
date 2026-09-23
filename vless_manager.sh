@@ -11,11 +11,29 @@ readonly QR_DIR="$CONFIG_DIR/qr-codes"
 readonly CERT_DIR="$CONFIG_DIR/certs"
 readonly BUNDLE_DIR="$CONFIG_DIR/bundles"
 readonly TLS_ENV="$CONFIG_DIR/tls.env"
-# WebSocket path (только для старых конфигов с network=ws)
+# WebSocket path (desktop legacy / mobile v2rayTun)
 readonly VLESS_WS_PATH="/vless"
 # Высокие порты: не пересекаемся с 80/443 (Gophish, nginx, CDN) и типичными сервисами
 readonly VLESS_PORT_MIN=25000
 readonly VLESS_PORT_MAX=45000
+# Мобила (v2rayTun): Xray слушает localhost; снаружи nginx на :443
+readonly VLESS_MOBILE_PORT_MIN=31000
+readonly VLESS_MOBILE_PORT_MAX=45000
+readonly VLESS_MOBILE_PUBLIC_PORT=443
+readonly VLESS_NGINX_D="$CONFIG_DIR/nginx.d"
+readonly GOPHISH_COMPOSE="/root/sneaky-gophish-ssl-automation/docker-compose.yml"
+readonly MOBILE_REALITY_HUB="_mobile-reality"
+readonly MOBILE_REALITY_PORT=443
+readonly MOBILE_REALITY_DIR="$CONFIG_DIR/mobile-reality"
+readonly REALITY_CONFIG_FILE="/etc/xray-reality/config.json"
+readonly REALITY_ENV="$CONFIG_DIR/reality.env"
+readonly REALITY_DEST_DEFAULT="www.samsung.com:443"
+readonly REALITY_SNI_DEFAULT="www.samsung.com"
+readonly MOBILE_REALITY_FP="chrome"
+readonly HYSTERIA_CONFIG="/etc/hysteria/config.yaml"
+readonly HYSTERIA_ENV="$CONFIG_DIR/hysteria.env"
+readonly HYSTERIA_CERT_DIR="/etc/hysteria/certs"
+readonly HYSTERIA_PORT=25001
 readonly VLESS_NEVER_PORTS=(80 443 8080 8443 8000 8888 3000 5000 3333 53 853 4443 9443 9444)
 
 # Colors
@@ -102,7 +120,8 @@ BANNER
 # Show menu
 show_menu() {
     echo -e "${BLUE}╔══════════════════ ГЛАВНОЕ МЕНЮ ══════════════════╗${NC}"
-    echo -e "${BLUE}║ 1) Создать новый VLESS конфиг                    ║${NC}"
+    echo -e "${BLUE}║ 1) Создать новый VLESS конфиг (ПК / Wi‑Fi)       ║${NC}"
+    echo -e "${BLUE}║ 10) Мобила — REALITY :443 + Hysteria2 :25001    ║${NC}"
     echo -e "${BLUE}║ 2) Показать существующие конфиги                ║${NC}"
     echo -e "${BLUE}║ 3) Удалить конфиг                               ║${NC}"
     echo -e "${BLUE}║ 4) Показать активные подключения                ║${NC}"
@@ -180,20 +199,659 @@ vless_port_is_forbidden() {
     return 1
 }
 
-# Свободный порт в диапазоне [min,max], без пересечения с «запретными»
+# Слушает ли порт на хосте (ss предпочтительнее netstat)
+port_is_listening() {
+    local p="$1"
+    if command -v ss >/dev/null 2>&1; then
+        ss -H -tuln "sport = :$p" 2>/dev/null | grep -q .
+        return $?
+    fi
+    netstat -tuln 2>/dev/null | grep -q ":$p "
+}
+
+# Все порты, уже назначенные клиентам (конфиги на диске + БД)
+collect_assigned_vless_ports() {
+    local client port config_file
+    local -A seen=()
+
+    while IFS= read -r client; do
+        [[ -z "$client" ]] && continue
+        config_file="$CLIENT_DIR/${client}.json"
+        port=$(extract_port_from_config "$config_file")
+        if [[ -n "$port" && -z "${seen[$port]:-}" ]]; then
+            seen["$port"]=1
+            echo "$port"
+        fi
+    done < <(get_all_config_files)
+
+    if [[ -f "$CONFIG_DIR/clients.db" ]]; then
+        while IFS= read -r port; do
+            [[ -z "$port" ]] && continue
+            [[ -n "${seen[$port]:-}" ]] && continue
+            seen["$port"]=1
+            echo "$port"
+        done < <(sqlite3 "$CONFIG_DIR/clients.db" "SELECT port FROM clients;" 2>/dev/null)
+    fi
+}
+
+# Порт занят: запрещённый, слушается ОС или уже назначен другому клиенту
+vless_port_is_taken() {
+    local p="$1"
+    local assigned
+
+    vless_port_is_forbidden "$p" && return 0
+    port_is_listening "$p" && return 0
+
+    while IFS= read -r assigned; do
+        [[ -z "$assigned" ]] && continue
+        [[ "$assigned" -eq "$p" ]] && return 0
+    done < <(collect_assigned_vless_ports)
+
+    return 1
+}
+
+# Свободный порт в диапазоне [min,max]: не слушается и не занят конфигами
 find_free_port() {
     local start_port=${1:-$VLESS_PORT_MIN}
     local end_port=${2:-$VLESS_PORT_MAX}
     local port
+
     for ((port=start_port; port<=end_port; port++)); do
-        vless_port_is_forbidden "$port" && continue
-        if ! netstat -tuln | grep -q ":$port "; then
-            echo "$port"
-            return 0
-        fi
+        vless_port_is_taken "$port" && continue
+        echo "$port"
+        return 0
     done
     echo "0"
     return 1
+}
+
+# Свободный порт для мобильных конфигов (диапазон 31000–45000, только localhost)
+find_free_mobile_port() {
+    find_free_port "$VLESS_MOBILE_PORT_MIN" "$VLESS_MOBILE_PORT_MAX"
+}
+
+# Конфиг mobile-443: Xray на 127.0.0.1, снаружи nginx stream passthrough :443
+is_mobile_443_config() {
+    local config_file="$1"
+    [[ -f "$config_file" ]] || return 1
+    grep -q '"listen": "127.0.0.1"' "$config_file" 2>/dev/null
+}
+
+# Клиент создан через mobile REALITY (hub)
+is_mobile_reality_client() {
+    local client_name="$1"
+    [[ -f "$MOBILE_REALITY_DIR/${client_name}.uuid" ]]
+}
+
+# Ключи REALITY (x25519)
+load_reality_env() {
+    REALITY_PRIVATE_KEY=""
+    REALITY_PUBLIC_KEY=""
+    REALITY_SHORT_ID=""
+    REALITY_DEST="$REALITY_DEST_DEFAULT"
+    REALITY_SNI="$REALITY_SNI_DEFAULT"
+    [[ -f "$REALITY_ENV" ]] && source "$REALITY_ENV"
+    REALITY_DEST="${REALITY_DEST:-$REALITY_DEST_DEFAULT}"
+    REALITY_SNI="${REALITY_SNI:-$REALITY_SNI_DEFAULT}"
+}
+
+ensure_reality_keys() {
+    load_reality_env
+    if [[ -n "${REALITY_PRIVATE_KEY:-}" && -n "${REALITY_PUBLIC_KEY:-}" && -n "${REALITY_SHORT_ID:-}" ]]; then
+        return 0
+    fi
+    local out priv pub
+    out=$(xray x25519 2>/dev/null) || return 1
+    priv=$(echo "$out" | awk -F': ' '/^PrivateKey/ {print $2}' | tr -d ' \r')
+    pub=$(echo "$out" | awk -F': ' '/Password \(PublicKey\)/ {print $2}' | tr -d ' \r')
+    REALITY_SHORT_ID=$(openssl rand -hex 4 2>/dev/null || echo "a1b2c3d4")
+    REALITY_PRIVATE_KEY="$priv"
+    REALITY_PUBLIC_KEY="$pub"
+    cat > "$REALITY_ENV" << EOF
+REALITY_PRIVATE_KEY=$REALITY_PRIVATE_KEY
+REALITY_PUBLIC_KEY=$REALITY_PUBLIC_KEY
+REALITY_SHORT_ID=$REALITY_SHORT_ID
+REALITY_DEST=$REALITY_DEST
+REALITY_SNI=$REALITY_SNI
+EOF
+    chmod 600 "$REALITY_ENV"
+}
+
+# VLESS URL — REALITY TCP + Vision :443 (схема kibervpn / LTE РФ)
+build_mobile_reality_url() {
+    local client_name="$1" uuid="$2" connect_host
+    load_reality_env
+    connect_host=$(get_public_host)
+    echo "vless://${uuid}@${connect_host}:${VLESS_MOBILE_PUBLIC_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_SNI}&fp=${MOBILE_REALITY_FP}&pbk=${REALITY_PUBLIC_KEY}&sid=${REALITY_SHORT_ID}&type=tcp#${client_name}"
+}
+
+load_hysteria_env() {
+    HY2_PASS=""
+    [[ -f "$HYSTERIA_ENV" ]] && source "$HYSTERIA_ENV"
+}
+
+ensure_hysteria_password() {
+    load_hysteria_env
+    if [[ -n "${HY2_PASS:-}" ]]; then
+        return 0
+    fi
+    HY2_PASS=$(openssl rand -base64 18 | tr -d '/+=' | head -c 20)
+    echo "HY2_PASS=${HY2_PASS}" > "$HYSTERIA_ENV"
+    chmod 600 "$HYSTERIA_ENV"
+}
+
+build_hysteria_url() {
+    local client_name="$1" host
+    load_hysteria_env
+    host=$(get_public_host)
+    echo "hy2://${HY2_PASS}@${host}:${HYSTERIA_PORT}?sni=${host}#${client_name}-hy2"
+}
+
+# Отдельный inbound REALITY :443 → /etc/xray-reality/config.json (как kibervpn)
+rebuild_mobile_reality_hub() {
+    load_reality_env
+    mkdir -p "$MOBILE_REALITY_DIR" /etc/xray-reality
+
+    HUB_CFG_PATH="$REALITY_CONFIG_FILE" HUB_MDIR="$MOBILE_REALITY_DIR" HUB_PORT="$MOBILE_REALITY_PORT" \
+    REALITY_PRIVATE_KEY="$REALITY_PRIVATE_KEY" REALITY_SHORT_ID="$REALITY_SHORT_ID" \
+    REALITY_DEST="$REALITY_DEST" REALITY_SNI="$REALITY_SNI" \
+    python3 << 'PY'
+import json, os, glob
+port = int(os.environ.get("HUB_PORT", "443"))
+cfg_path = os.environ["HUB_CFG_PATH"]
+mdir = os.environ["HUB_MDIR"]
+priv = os.environ["REALITY_PRIVATE_KEY"]
+sid = os.environ["REALITY_SHORT_ID"]
+dest = os.environ.get("REALITY_DEST", "www.samsung.com:443")
+sni = os.environ.get("REALITY_SNI", "www.samsung.com")
+
+clients = []
+for path in sorted(glob.glob(mdir + "/*.uuid")):
+    name = os.path.basename(path).replace(".uuid", "")
+    with open(path) as f:
+        uuid = f.read().strip()
+    if uuid:
+        clients.append({
+            "id": uuid,
+            "flow": "xtls-rprx-vision",
+            "email": f"{name}@vless.local"
+        })
+
+cfg = {
+    "log": {"loglevel": "warning"},
+    "inbounds": [{
+        "listen": "0.0.0.0",
+        "port": port,
+        "protocol": "vless",
+        "settings": {"clients": clients, "decryption": "none"},
+        "streamSettings": {
+            "network": "tcp",
+            "security": "reality",
+            "realitySettings": {
+                "dest": dest,
+                "serverNames": [sni],
+                "privateKey": priv,
+                "shortIds": [sid]
+            }
+        },
+        "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"]}
+    }],
+    "outbounds": [{"protocol": "freedom", "settings": {"domainStrategy": "UseIPv4"}}]
+}
+with open(cfg_path, "w") as f:
+    json.dump(cfg, f, indent=2)
+    f.write("\n")
+PY
+    rm -f "$CLIENT_DIR/${MOBILE_REALITY_HUB}.json" 2>/dev/null || true
+}
+
+# Освободить :443 для xray-reality; nginx/hysteria на 443 не используем
+setup_nginx_reality_stream() {
+    local stream_conf="/etc/nginx/stream.d/vless-mobile.conf"
+
+    setup_gophish_port_for_nginx
+    systemctl stop hysteria-mobile.service 2>/dev/null || true
+    systemctl disable hysteria-mobile.service 2>/dev/null || true
+    rm -f /etc/nginx/sites-enabled/vless-mobile-443.conf /etc/nginx/sites-enabled/default 2>/dev/null || true
+
+    cat > "$stream_conf" << 'NGINX_STREAM'
+# REALITY :443 — отдельный xray-reality.service
+NGINX_STREAM
+
+    if command -v nginx >/dev/null 2>&1; then
+        nginx -t >/dev/null 2>&1 || { nginx -t; return 1; }
+        systemctl reload nginx >/dev/null 2>&1 || true
+    fi
+}
+
+install_xray_reality_unit() {
+    cat > /etc/systemd/system/xray-reality.service << 'UNIT'
+[Unit]
+Description=Xray VLESS Reality :443 (vless-manager mobile)
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/xray run -c /etc/xray-reality/config.json
+Restart=on-failure
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    systemctl daemon-reload
+    systemctl enable xray-reality.service >/dev/null 2>&1 || true
+}
+
+sync_hysteria_certs() {
+    load_tls_env
+    [[ -f "${LE_FULLCHAIN:-}" && -f "${LE_PRIVKEY:-}" ]] || return 1
+    mkdir -p "$HYSTERIA_CERT_DIR"
+    cp -f "$LE_FULLCHAIN" "$HYSTERIA_CERT_DIR/fullchain.pem"
+    cp -f "$LE_PRIVKEY" "$HYSTERIA_CERT_DIR/privkey.pem"
+    chmod 644 "$HYSTERIA_CERT_DIR/fullchain.pem" 2>/dev/null || true
+    chmod 600 "$HYSTERIA_CERT_DIR/privkey.pem" 2>/dev/null || true
+}
+
+setup_hysteria_mobile() {
+    load_tls_env
+    ensure_hysteria_password
+    sync_hysteria_certs || {
+        echo -e "${RED}Нужен Let's Encrypt для Hysteria2${NC}"
+        return 1
+    }
+    local public_host
+    public_host=$(get_public_host)
+    mkdir -p /etc/hysteria
+    cat > "$HYSTERIA_CONFIG" << EOF
+listen: :${HYSTERIA_PORT}
+
+tls:
+  cert: ${HYSTERIA_CERT_DIR}/fullchain.pem
+  key: ${HYSTERIA_CERT_DIR}/privkey.pem
+
+auth:
+  type: password
+  password: ${HY2_PASS}
+
+masquerade:
+  type: proxy
+  proxy:
+    url: https://${public_host}
+    rewriteHost: true
+
+bandwidth:
+  up: 1 gbps
+  down: 1 gbps
+EOF
+    cat > /etc/systemd/system/hysteria-server.service << 'UNIT'
+[Unit]
+Description=Hysteria2 mobile backup (UDP)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/hysteria server --config /etc/hysteria/config.yaml
+Restart=on-failure
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    if ! command -v hysteria >/dev/null 2>&1; then
+        echo -e "${YELLOW}Устанавливаю Hysteria2...${NC}"
+        curl -fsSL -o /usr/local/bin/hysteria \
+            "https://github.com/apernet/hysteria/releases/download/app/v2.12.3/hysteria-linux-amd64" && \
+            chmod +x /usr/local/bin/hysteria || return 1
+    fi
+    local hook="/etc/letsencrypt/renewal-hooks/post/vless-hysteria-cert-copy.sh"
+    cat > "$hook" << 'HOOK'
+#!/bin/bash
+set -e
+for d in /etc/letsencrypt/live/*/; do
+  [[ -f "$d/fullchain.pem" && -f "$d/privkey.pem" ]] || continue
+  cp -f "$d/fullchain.pem" /etc/hysteria/certs/fullchain.pem
+  cp -f "$d/privkey.pem" /etc/hysteria/certs/privkey.pem
+  break
+done
+HOOK
+    chmod +x "$hook"
+    systemctl daemon-reload
+    systemctl enable hysteria-server.service >/dev/null 2>&1 || true
+    systemctl restart hysteria-server.service 2>/dev/null || systemctl start hysteria-server.service
+    iptables -C INPUT -p udp --dport "$HYSTERIA_PORT" -j ACCEPT 2>/dev/null || \
+        iptables -I INPUT -p udp --dport "$HYSTERIA_PORT" -j ACCEPT 2>/dev/null || true
+    log "INFO" "Hysteria2 UDP :${HYSTERIA_PORT} (запасной профиль LTE)"
+}
+
+restart_xray_reality() {
+    install_xray_reality_unit
+    if ! xray run -test -c "$REALITY_CONFIG_FILE" 2>/dev/null; then
+        xray run -test -c "$REALITY_CONFIG_FILE" || return 1
+    fi
+    systemctl restart xray-reality.service 2>/dev/null || systemctl start xray-reality.service
+}
+
+# Добавить mobile-клиента в REALITY hub
+register_mobile_reality_client() {
+    local client_name="$1" uuid="$2"
+    mkdir -p "$MOBILE_REALITY_DIR"
+    echo "$uuid" > "$MOBILE_REALITY_DIR/${client_name}.uuid"
+    rebuild_mobile_reality_hub
+    restart_xray_reality
+}
+
+# Wi‑Fi + LTE: выдать обе ссылки
+write_mobile_profile_bundle() {
+    local client_name="$1" vless_url="$2" hy2_url="$3"
+    local note_file="$CONFIG_DIR/urls/${client_name}-v2raytun.txt"
+    load_reality_env
+    cat > "$note_file" << EOF
+Мобильный профиль: $client_name (схема kibervpn)
+==============================================
+
+★ LTE — REALITY :443 (основной, как у kibervpn):
+$vless_url
+
+★ Запасной — Hysteria2 UDP :${HYSTERIA_PORT}:
+$hy2_url
+
+Wi‑Fi / ПК — пункт 1 меню (VLESS+TLS порт 25000+), НЕ удаляйте!
+
+v2rayTun:
+1) Удалите старые профили с этим именем
+2) Импортируй LTE-ссылку REALITY; если нет инета — hy2://
+3) Private DNS ВЫКЛ, MUX ВЫКЛ
+EOF
+    echo "$vless_url" > "$CONFIG_DIR/urls/${client_name}.txt"
+    echo "$hy2_url" > "$CONFIG_DIR/urls/${client_name}-hy2.txt"
+    chmod 644 "$note_file" 2>/dev/null || true
+}
+
+# Освободить :443 на хосте для nginx (GoPhish → 127.0.0.1:8443)
+setup_gophish_port_for_nginx() {
+    [[ -f "$GOPHISH_COMPOSE" ]] || return 0
+    if grep -qE '127\.0\.0\.1:8443:443|"443:443"' "$GOPHISH_COMPOSE" 2>/dev/null; then
+        if grep -q '127.0.0.1:8443:443' "$GOPHISH_COMPOSE" 2>/dev/null; then
+            return 0
+        fi
+    fi
+    if ! grep -q '"443:443"' "$GOPHISH_COMPOSE" 2>/dev/null; then
+        log "WARN" "GoPhish compose: не найден проброс 443:443 — nginx :443 настраивается вручную"
+        return 0
+    fi
+    echo -e "${YELLOW}Переношу GoPhish с :443 на 127.0.0.1:8443 (для nginx + VLESS)...${NC}"
+    cp -a "$GOPHISH_COMPOSE" "${GOPHISH_COMPOSE}.bak-vless-$(date +%Y%m%d%H%M%S)"
+    sed -i 's/"443:443"/"127.0.0.1:8443:443"/' "$GOPHISH_COMPOSE"
+    if command -v docker >/dev/null 2>&1; then
+        (cd /root/sneaky-gophish-ssl-automation && docker compose up -d sneaky_gophish 2>/dev/null) || \
+        (cd /root/sneaky-gophish-ssl-automation && docker-compose up -d sneaky_gophish 2>/dev/null) || true
+        sleep 2
+    fi
+    log "INFO" "GoPhish: 443 перенесён на 127.0.0.1:8443"
+}
+
+# nginx stream :443 — SNI VPN-домена → Xray (TLS passthrough), иначе fallback upstream
+setup_nginx_mobile_443() {
+    local public_host stream_conf nginx_conf
+
+    load_tls_env
+    public_host=$(get_public_host)
+    stream_conf="/etc/nginx/stream.d/vless-mobile.conf"
+    nginx_conf="/etc/nginx/nginx.conf"
+
+    if ! command -v nginx >/dev/null 2>&1; then
+        echo -e "${YELLOW}Устанавливаю nginx...${NC}"
+        apt-get update -qq >/dev/null 2>&1 || true
+        DEBIAN_FRONTEND=noninteractive apt-get install -y nginx libnginx-mod-stream >/dev/null 2>&1 || {
+            echo -e "${RED}Не удалось установить nginx (apt-get install nginx libnginx-mod-stream)${NC}"
+            return 1
+        }
+    fi
+    if ! nginx -V 2>&1 | grep -q with-stream; then
+        echo -e "${YELLOW}Устанавливаю модуль nginx stream...${NC}"
+        DEBIAN_FRONTEND=noninteractive apt-get install -y libnginx-mod-stream >/dev/null 2>&1 || true
+    fi
+    if [[ -f /usr/lib/nginx/modules/ngx_stream_module.so ]] && \
+       [[ ! -f /etc/nginx/modules-enabled/50-mod-stream.conf ]]; then
+        echo 'load_module modules/ngx_stream_module.so;' > /etc/nginx/modules-enabled/50-mod-stream.conf
+    fi
+
+    setup_gophish_port_for_nginx
+    mkdir -p "$VLESS_NGINX_D" /etc/nginx/stream.d "$CONFIG_DIR/mobile-stream"
+
+    if [[ ! -f "${LE_FULLCHAIN:-}" || ! -f "${LE_PRIVKEY:-}" ]]; then
+        echo -e "${RED}Нужен Let's Encrypt для ${public_host}${NC}"
+        return 1
+    fi
+
+    # Убираем HTTP :443 (WS+http2 ломает v2rayTun на LTE)
+    rm -f /etc/nginx/sites-enabled/vless-mobile-443.conf 2>/dev/null || true
+    rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
+
+    if ! grep -q '^stream {' "$nginx_conf" 2>/dev/null; then
+        cat >> "$nginx_conf" << 'NGINX_STREAM'
+
+stream {
+    include /etc/nginx/stream.d/*.conf;
+}
+NGINX_STREAM
+    elif ! grep -q 'stream.d/\*\.conf' "$nginx_conf" 2>/dev/null; then
+        sed -i '/^stream {/a \    include /etc/nginx/stream.d/*.conf;' "$nginx_conf"
+    fi
+
+    rebuild_mobile_stream_map "$public_host"
+
+    if ! nginx -t 2>/dev/null; then
+        echo -e "${RED}nginx -t failed — проверьте конфиг${NC}"
+        nginx -t
+        return 1
+    fi
+    systemctl enable nginx 2>/dev/null || true
+    systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || {
+        echo -e "${RED}Не удалось перезапустить nginx${NC}"
+        return 1
+    }
+    log "INFO" "nginx stream :443 — TLS passthrough ${public_host} → Xray, иначе GoPhish"
+}
+
+# Пересобрать SNI map для mobile (один домен → последний зарегистрированный порт)
+rebuild_mobile_stream_map() {
+    local public_host="$1"
+    local stream_conf="/etc/nginx/stream.d/vless-mobile.conf"
+    local map_body="" client config_file port name
+
+    while IFS= read -r client; do
+        [[ -z "$client" ]] && continue
+        config_file="$CLIENT_DIR/${client}.json"
+        is_mobile_443_config "$config_file" || continue
+        port=$(extract_port_from_config "$config_file")
+        [[ -n "$port" ]] || continue
+        echo "${public_host} 127.0.0.1:${port};" > "$CONFIG_DIR/mobile-stream/${client}.map"
+    done < <(get_all_config_files)
+
+    map_body="    ${public_host} 127.0.0.1:31999;"
+    if [[ -d "$CONFIG_DIR/mobile-stream" ]]; then
+        local latest=""
+        for f in "$CONFIG_DIR/mobile-stream"/*.map; do
+            [[ -f "$f" ]] || continue
+            latest="$f"
+        done
+        if [[ -n "$latest" ]]; then
+            map_body="    $(tr -d '\n' < "$latest" | sed 's/;$//');"
+        fi
+    fi
+
+    cat > "$stream_conf" << NGINX_STREAM
+# VLESS Manager — TLS passthrough (без WebSocket, v2rayTun LTE)
+map \$ssl_preread_server_name \$vless_mobile_upstream {
+    ${map_body}
+    default 127.0.0.1:8443;
+}
+
+server {
+    listen 443;
+    ssl_preread on;
+    proxy_pass \$vless_mobile_upstream;
+    proxy_timeout 86400s;
+    proxy_connect_timeout 10s;
+}
+NGINX_STREAM
+}
+
+# Зарегистрировать mobile-клиента в stream map
+register_mobile_stream_client() {
+    local client_name="$1"
+    local internal_port="$2"
+    local public_host
+
+    public_host=$(get_public_host)
+    echo "${public_host} 127.0.0.1:${internal_port};" > "$CONFIG_DIR/mobile-stream/${client_name}.map"
+    rebuild_mobile_stream_map "$public_host"
+    rm -f "$VLESS_NGINX_D/${client_name}.conf" 2>/dev/null || true
+
+    if command -v nginx >/dev/null 2>&1 && nginx -t 2>/dev/null; then
+        systemctl reload nginx 2>/dev/null || true
+    fi
+}
+
+# Инструкция v2rayTun рядом с URL
+write_v2raytun_mobile_notes() {
+    local client_name="$1" vless_url="$2" hy2_url="${3:-}"
+    [[ -n "$hy2_url" ]] && write_mobile_profile_bundle "$client_name" "$vless_url" "$hy2_url" && return 0
+    echo "$vless_url" > "$CONFIG_DIR/urls/${client_name}.txt"
+}
+
+# Обновить inbound port в JSON-конфиге клиента
+set_config_port() {
+    local config_file="$1"
+    local new_port="$2"
+
+    CONFIG_FILE="$config_file" NEW_PORT="$new_port" python3 << 'PY'
+import json, os, sys
+path = os.environ["CONFIG_FILE"]
+port = int(os.environ["NEW_PORT"])
+with open(path, encoding="utf-8") as f:
+    cfg = json.load(f)
+updated = False
+for ib in cfg.get("inbounds", []):
+    if "port" in ib:
+        ib["port"] = port
+        updated = True
+        break
+if not updated:
+    sys.exit(1)
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(cfg, f, indent=2, ensure_ascii=False)
+    f.write("\n")
+PY
+}
+
+# Пересобрать URL/QR/bundle и запись в БД после смены порта
+refresh_client_artifacts() {
+    local client_name="$1"
+    local config_file="$CLIENT_DIR/${client_name}.json"
+    local uuid port vless_url qr_path=""
+
+    uuid=$(extract_uuid_from_config "$config_file")
+    port=$(extract_port_from_config "$config_file")
+    [[ -n "$uuid" && -n "$port" ]] || return 1
+
+    vless_url=$(build_vless_url_from_config "$config_file" "$client_name")
+    echo "$vless_url" > "$CONFIG_DIR/urls/${client_name}.txt"
+    local bundle_port="$port"
+    is_mobile_443_config "$config_file" && bundle_port=$VLESS_MOBILE_PUBLIC_PORT
+    write_singbox_client_bundle "$client_name" "$uuid" "$bundle_port" "$(get_public_host)"
+    if generate_qr_code "$vless_url" "$client_name"; then
+        qr_path="$QR_DIR/${client_name}.png"
+    fi
+
+    init_database
+    sqlite3 "$CONFIG_DIR/clients.db" << EOF
+INSERT OR REPLACE INTO clients (name, uuid, port, config_path, url, qr_path)
+VALUES ('$client_name', '$uuid', $port, '$config_file', '$vless_url', '$qr_path');
+EOF
+}
+
+# Исправить дублирующиеся порты у существующих клиентов
+repair_duplicate_ports() {
+    local interactive="${1:-1}"
+    local -A port_owner=()
+    local -A port_count=()
+    local client port config_file keeper new_port fixed=0
+    local -a to_fix=()
+
+    if [[ "$interactive" == "1" ]]; then
+        clear
+        echo -e "${YELLOW}╔════════════════ ИСПРАВЛЕНИЕ ПОРТОВ ════════════════╗${NC}"
+        echo -e "${BLUE}║ Поиск дубликатов портов среди клиентов...            ║${NC}"
+    fi
+
+    while IFS= read -r client; do
+        [[ -z "$client" ]] && continue
+        config_file="$CLIENT_DIR/${client}.json"
+        port=$(extract_port_from_config "$config_file")
+        [[ -n "$port" ]] || continue
+
+        if [[ -z "${port_owner[$port]:-}" ]]; then
+            port_owner["$port"]="$client"
+            port_count["$port"]=1
+        else
+            port_count["$port"]=$((port_count["$port"] + 1))
+            to_fix+=("$client|$port")
+        fi
+    done < <(get_all_config_files)
+
+    if [[ ${#to_fix[@]} -eq 0 ]]; then
+        if [[ "$interactive" == "1" ]]; then
+            echo -e "${GREEN}║ Дубликатов портов не найдено.                        ║${NC}"
+            echo -e "${YELLOW}╚══════════════════════════════════════════════════════╝${NC}"
+            read -p "Нажми Enter для продолжения..."
+        else
+            log "INFO" "Дубликатов портов не найдено"
+        fi
+        return 0
+    fi
+
+    if [[ "$interactive" == "1" ]]; then
+        echo -e "${RED}║ Найдено конфликтов: ${#to_fix[@]}                                   ║${NC}"
+    else
+        log "WARN" "Найдено конфликтов портов: ${#to_fix[@]}"
+    fi
+
+    for entry in "${to_fix[@]}"; do
+        client="${entry%%|*}"
+        port="${entry##*|}"
+        keeper="${port_owner[$port]}"
+        new_port=$(find_free_port "$VLESS_PORT_MIN" "$VLESS_PORT_MAX")
+        if [[ "$new_port" == "0" ]]; then
+            log "ERROR" "Не удалось найти свободный порт для $client"
+            continue
+        fi
+
+        if ! set_config_port "$CLIENT_DIR/${client}.json" "$new_port"; then
+            log "ERROR" "Не удалось обновить порт в конфиге $client"
+            continue
+        fi
+
+        refresh_client_artifacts "$client"
+        /usr/local/bin/vless-servers restart "$client" 2>/dev/null || \
+            /usr/local/bin/vless-servers start "$client" 2>/dev/null || true
+
+        if [[ "$interactive" == "1" ]]; then
+            echo -e "${GREEN}║ ✅ $client: $port → $new_port (оставлен $keeper на $port)${NC}"
+        else
+            log "INFO" "$client: порт $port → $new_port (оставлен $keeper на $port)"
+        fi
+        ((fixed++)) || true
+    done
+
+    if [[ "$interactive" == "1" ]]; then
+        echo -e "${BLUE}║ Исправлено конфигов: $fixed                            ║${NC}"
+        echo -e "${YELLOW}╚══════════════════════════════════════════════════════╝${NC}"
+        read -p "Нажми Enter для продолжения..."
+    else
+        log "INFO" "Исправлено конфликтов портов: $fixed"
+    fi
 }
 
 # Generate QR code
@@ -381,11 +1039,19 @@ generate_client_tls_cert() {
     return 0
 }
 
-# Subscription URL: голый TCP | WS+TLS (старые) | TCP+TLS (текущий)
+# Извлечь WS path из JSON конфига
+extract_ws_path_from_config() {
+    local config_file="$1"
+    local path
+    path=$(grep -o '"path": "[^"]*"' "$config_file" 2>/dev/null | head -1 | cut -d'"' -f4)
+    echo "${path:-$VLESS_WS_PATH}"
+}
+
+# Subscription URL: TCP+TLS | WS+TLS | mobile-443 (nginx)
 build_vless_url_from_config() {
     local config_file="$1"
     local client_name="$2"
-    local uuid port connect_host sni insecure_q
+    local uuid port connect_host sni insecure_q path_enc ws_path
     uuid=$(extract_uuid_from_config "$config_file")
     port=$(extract_port_from_config "$config_file")
     if [[ -z "$uuid" || -z "$port" ]]; then
@@ -399,9 +1065,16 @@ build_vless_url_from_config() {
     else
         insecure_q="allowInsecure=1"
     fi
-    local path_enc
-    path_enc=$(printf '%s' "$VLESS_WS_PATH" | sed 's|/|%2F|g')
-    if grep -qE '"network":\s*"ws"' "$config_file" 2>/dev/null; then
+    if is_mobile_reality_client "$client_name"; then
+        build_mobile_reality_url "$client_name" "$uuid"
+        return 0
+    fi
+    if is_mobile_443_config "$config_file"; then
+        port=$VLESS_MOBILE_PUBLIC_PORT
+        echo "vless://${uuid}@${connect_host}:${port}?encryption=none&security=tls&sni=${sni}&fp=chrome&type=tcp&${insecure_q}#${client_name}"
+    elif grep -qE '"network":\s*"ws"' "$config_file" 2>/dev/null; then
+        ws_path=$(extract_ws_path_from_config "$config_file")
+        path_enc=$(printf '%s' "$ws_path" | sed 's|/|%2F|g')
         echo "vless://${uuid}@${connect_host}:${port}?encryption=none&security=tls&sni=${sni}&fp=chrome&type=ws&host=${connect_host}&path=${path_enc}&${insecure_q}#${client_name}"
     elif grep -qE '"network":\s*"tcp"' "$config_file" 2>/dev/null && grep -q '"security": "tls"' "$config_file" 2>/dev/null; then
         echo "vless://${uuid}@${connect_host}:${port}?encryption=none&security=tls&sni=${sni}&fp=chrome&type=tcp&${insecure_q}#${client_name}"
@@ -936,6 +1609,7 @@ system_settings_menu() {
     echo -e "${BLUE}║ 4) Включить IP forwarding                            ║${NC}"
     echo -e "${BLUE}║ 5) Показать сетевые интерфейсы                       ║${NC}"
     echo -e "${BLUE}║ 6) Настроить доступ к VPN интерфейсам                ║${NC}"
+    echo -e "${BLUE}║ 7) Исправить дублирующиеся порты                     ║${NC}"
     echo -e "${BLUE}║ 0) Назад                                             ║${NC}"
     echo -e "${PURPLE}╚══════════════════════════════════════════════════════╝${NC}"
     echo -n "Выбери опцию: "
@@ -972,6 +1646,10 @@ system_settings_menu() {
         6)
             echo -e "${YELLOW}Настройка доступа к VPN интерфейсам...${NC}"
             setup_openvpn_integration
+            ;;
+        7)
+            repair_duplicate_ports 1
+            return
             ;;
         0) return ;;
         *) echo -e "${RED}Неверный выбор${NC}" ;;
@@ -1150,6 +1828,226 @@ EOF
     log "INFO" "Создан конфиг с QR-кодом для клиента $client_name (UUID: $uuid, Port: $port)"
 }
 
+# Записать mobile inbound: 127.0.0.1 + TCP + TLS (nginx stream passthrough :443)
+write_mobile_xray_config() {
+    local client_name="$1" uuid="$2" internal_port="$3"
+    local cert_file key_file public_host
+
+    load_tls_env
+    public_host=$(get_public_host)
+    if tls_uses_letsencrypt; then
+        cert_file="$LE_FULLCHAIN"
+        key_file="$LE_PRIVKEY"
+    else
+        cert_file="$CERT_DIR/${client_name}.crt"
+        key_file="$CERT_DIR/${client_name}.key"
+    fi
+
+    cat > "$CLIENT_DIR/${client_name}.json" << EOF
+{
+  "log": {
+    "loglevel": "info"
+  },
+  "dns": {
+    "servers": [
+      "8.8.8.8",
+      "1.1.1.1"
+    ],
+    "queryStrategy": "UseIPv4"
+  },
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": $internal_port,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "$uuid",
+            "email": "${client_name}@vless.local"
+          }
+        ],
+        "decryption": "none",
+        "packetEncoding": "xudp"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "tls",
+        "tlsSettings": {
+          "certificates": [
+            {
+              "certificateFile": "$cert_file",
+              "keyFile": "$key_file"
+            }
+          ],
+          "minVersion": "1.2",
+          "maxVersion": "1.3",
+          "alpn": ["http/1.1"]
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": ["http", "tls", "quic"],
+        "metadataOnly": false
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "settings": {
+        "domainStrategy": "UseIPv4"
+      },
+      "tag": "direct"
+    }
+  ],
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      {
+        "type": "field",
+        "network": "tcp,udp",
+        "outboundTag": "direct"
+      }
+    ]
+  }
+}
+EOF
+}
+
+# Миграция mobile: WS/внешний порт → TCP+TLS + nginx stream :443
+migrate_mobile_config_to_443() {
+    local client_name="$1"
+    local config_file="$CLIENT_DIR/${client_name}.json"
+    local internal_port uuid
+
+    [[ -f "$config_file" ]] || return 1
+    internal_port=$(extract_port_from_config "$config_file")
+    uuid=$(extract_uuid_from_config "$config_file")
+    [[ -n "$internal_port" && -n "$uuid" ]] || return 1
+
+    if is_mobile_443_config "$config_file" && \
+       grep -qE '"network": "tcp"' "$config_file" && \
+       grep -q '"security": "tls"' "$config_file"; then
+        setup_nginx_mobile_443 || return 1
+        register_mobile_stream_client "$client_name" "$internal_port"
+        refresh_client_artifacts "$client_name"
+        write_v2raytun_mobile_notes "$client_name" \
+            "$(build_vless_url_from_config "$config_file" "$client_name")"
+        return 0
+    fi
+
+    echo -e "${YELLOW}Миграция $client_name → TCP+TLS passthrough :443...${NC}"
+    if ! setup_nginx_mobile_443; then
+        return 1
+    fi
+    if ! generate_client_tls_cert "$(get_server_ip)" "$client_name"; then
+        return 1
+    fi
+
+    write_mobile_xray_config "$client_name" "$uuid" "$internal_port"
+    register_mobile_stream_client "$client_name" "$internal_port"
+    refresh_client_artifacts "$client_name"
+    write_v2raytun_mobile_notes "$client_name" \
+        "$(build_vless_url_from_config "$config_file" "$client_name")"
+    /usr/local/bin/vless-servers restart "$client_name" 2>/dev/null || \
+        /usr/local/bin/vless-servers start "$client_name" 2>/dev/null || true
+    log "INFO" "Мобильный конфиг $client_name: TCP+TLS stream :443 (127.0.0.1:${internal_port})"
+}
+
+# VLESS + TLS :443 — для v2rayTun / LTE
+create_mobile_vless_config() {
+    local client_name="$1"
+
+    if [[ -z "$client_name" ]]; then
+        echo -e "${RED}Имя клиента не может быть пустым!${NC}"
+        return 1
+    fi
+
+    if [[ "$client_name" == "$MOBILE_REALITY_HUB" ]]; then
+        echo -e "${RED}Имя ${MOBILE_REALITY_HUB} зарезервировано системой!${NC}"
+        return 1
+    fi
+
+    if is_mobile_reality_client "$client_name"; then
+        echo -e "${YELLOW}Mobile LTE для $client_name — обновляю REALITY/Hysteria...${NC}"
+        local exist_uuid vless_url hy2_url qr_path=""
+        exist_uuid=$(cat "$MOBILE_REALITY_DIR/${client_name}.uuid")
+        ensure_reality_keys || true
+        setup_nginx_reality_stream || true
+        setup_hysteria_mobile || true
+        register_mobile_reality_client "$client_name" "$exist_uuid"
+        vless_url=$(build_mobile_reality_url "$client_name" "$exist_uuid")
+        hy2_url=$(build_hysteria_url "$client_name")
+        write_v2raytun_mobile_notes "$client_name" "$vless_url" "$hy2_url"
+        generate_qr_code "$vless_url" "$client_name" && qr_path="$QR_DIR/${client_name}.png"
+        display_qr_terminal "$vless_url"
+        return 0
+    fi
+
+    local uuid vless_url hy2_url qr_path="" public_host
+    uuid=$(generate_uuid)
+    public_host=$(get_public_host)
+    load_reality_env
+
+    echo -e "${CYAN}📱 LTE: REALITY :443 (${REALITY_SNI}) + Hysteria2 :${HYSTERIA_PORT}${NC}"
+    echo -e "${YELLOW}   Wi‑Fi: создайте отдельно пункт 1 — конфиги не удаляем${NC}"
+
+    if ! ensure_reality_keys; then
+        echo -e "${RED}Не удалось получить ключи REALITY (xray x25519)${NC}"
+        return 1
+    fi
+    if ! setup_nginx_reality_stream; then
+        echo -e "${RED}Не удалось освободить :443${NC}"
+        return 1
+    fi
+    setup_hysteria_mobile || echo -e "${YELLOW}Hysteria2 не поднялась — только REALITY${NC}"
+
+    register_mobile_reality_client "$client_name" "$uuid"
+    vless_url=$(build_mobile_reality_url "$client_name" "$uuid")
+    hy2_url=$(build_hysteria_url "$client_name")
+    write_v2raytun_mobile_notes "$client_name" "$vless_url" "$hy2_url"
+
+    echo -e "${YELLOW}🔄 Генерирую QR-код для v2rayTun...${NC}"
+    if generate_qr_code "$vless_url" "$client_name"; then
+        qr_path="$QR_DIR/${client_name}.png"
+        echo -e "${GREEN}✅ QR-код создан: $qr_path${NC}"
+    fi
+
+    init_database
+    sqlite3 "$CONFIG_DIR/clients.db" << EOF
+INSERT OR REPLACE INTO clients (name, uuid, port, config_path, url, qr_path)
+VALUES ('$client_name', '$uuid', $VLESS_MOBILE_PUBLIC_PORT, '$REALITY_CONFIG_FILE', '$vless_url', '$qr_path');
+EOF
+
+    setup_enhanced_iptables
+
+    echo -e "${GREEN}╔════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║        📱 MOBILE kibervpn-style (REALITY + Hy2)                 ║${NC}"
+    echo -e "${GREEN}╠════════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${CYAN}║ Клиент: $client_name${NC}"
+    echo -e "${CYAN}║ UUID: $uuid${NC}"
+    echo -e "${CYAN}║ LTE: 443 REALITY Vision | SNI: ${REALITY_SNI}${NC}"
+    echo -e "${CYAN}║ Запасной: Hysteria2 UDP :${HYSTERIA_PORT}${NC}"
+    echo -e "${CYAN}║ Hy2: $hy2_url${NC}"
+    echo -e "${GREEN}╠════════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${YELLOW}║ VLESS URL:${NC}"
+    echo -e "${WHITE}║ $vless_url${NC}"
+    echo -e "${GREEN}╠════════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${BLUE}║ URL: $CONFIG_DIR/urls/${client_name}.txt${NC}"
+    if [[ -n "$qr_path" ]]; then
+        echo -e "${BLUE}║ QR: $qr_path${NC}"
+    fi
+    echo -e "${GREEN}╚════════════════════════════════════════════════════════════════╝${NC}"
+    echo -e "${YELLOW}v2rayTun: MUX ВЫКЛ, Private DNS ВЫКЛ, только LTE${NC}"
+    echo -e "${YELLOW}Wi‑Fi/ПК: используйте пункт 1 меню (отдельный конфиг)${NC}"
+
+    echo
+    display_qr_terminal "$vless_url"
+
+    log "INFO" "Mobile kibervpn-style $client_name (UUID: $uuid, REALITY :443, Hy2 :${HYSTERIA_PORT})"
+}
+
 # Main menu function
 main_menu() {
     while true; do
@@ -1167,6 +2065,17 @@ main_menu() {
                     echo -e "${RED}Имя не может быть пустым!${NC}"
                 fi
                 read -p "Нажми Enter для продолжения..." 
+                ;;
+            10)
+                echo -e "${CYAN}📱 REALITY :443 + Hysteria2 (LTE, kibervpn)${NC}"
+                echo -n "Введи имя клиента (например akuma0xdead-mob): "
+                read -r client_name
+                if [[ -n "$client_name" ]]; then
+                    create_mobile_vless_config "$client_name"
+                else
+                    echo -e "${RED}Имя не может быть пустым!${NC}"
+                fi
+                read -p "Нажми Enter для продолжения..."
                 ;;
             2) list_configs ;;
             3) delete_config_menu ;;
@@ -1203,5 +2112,37 @@ main() {
 
 # Run only if script called directly
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    if [[ "${1:-}" == "repair-ports" ]]; then
+        ensure_root
+        setup_directories
+        check_dependencies
+        init_database
+        repair_duplicate_ports 0
+        exit $?
+    fi
+    if [[ "${1:-}" == "cli" ]]; then
+        ensure_root
+        setup_directories
+        check_dependencies
+        init_database
+        cmd="${2:-}"
+        name="${3:-}"
+        case "$cmd" in
+            create-wifi)
+                [[ -n "$name" ]] || { echo "usage: cli create-wifi NAME" >&2; exit 2; }
+                create_vless_config "$name"
+                exit $?
+                ;;
+            create-mobile)
+                [[ -n "$name" ]] || { echo "usage: cli create-mobile NAME" >&2; exit 2; }
+                create_mobile_vless_config "$name"
+                exit $?
+                ;;
+            *)
+                echo "usage: $0 cli create-wifi|create-mobile NAME" >&2
+                exit 2
+                ;;
+        esac
+    fi
     main "$@"
 fi

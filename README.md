@@ -119,6 +119,23 @@ Mobile clients (v2rayNG, Shadowrocket, etc.) can keep using QR / URL as before.
 
 ---
 
+## 🌐 **Web Panel (multi-node, admin UI)**
+
+В репозитории каталог **`panel/`** — FastAPI-панель: вход админа, страница **Proxy** (создание клиента → VLESS + Hysteria2 + QR), **Ноды**, **Сертификаты** (certbot + Hysteria).
+
+Web-панель и **systemd** (`vless-panel.service`, автозапуск) ставятся вместе с основным установщиком:
+
+```bash
+sudo ./install_vless_manager.sh
+# http://your-server:8765/login  (admin / admin — смените в «Кабинет»)
+```
+
+Удалённая нода: curl install.sh с master → `install_vless_manager.sh --remote-agent` + службы `vless-panel` / `vless-agent`.
+
+Подробнее: [panel/README.md](panel/README.md).
+
+---
+
 ## 🎮 **Quick Start**
 
 ### 🚀 **Launch Manager**

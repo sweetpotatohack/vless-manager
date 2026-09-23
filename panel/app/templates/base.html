@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Orbitron:wght@500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css?v=3">
+</head>
+<body>
+<div class="scanlines" aria-hidden="true"></div>
+<div class="grid-bg" aria-hidden="true"></div>
+{% if admin is defined and admin %}
+<div class="layout">
+  <aside class="sidebar">
+    <h1 class="logo glitch" data-text="VLESS">VLESS<span class="logo-accent">PRO</span></h1>
+    <p class="logo-sub">// control node</p>
+    <nav class="nav">
+      <a href="/dashboard" class="{% if request.url.path == '/dashboard' %}active{% endif %}"><span class="nav-dot"></span>Обзор</a>
+      <a href="/proxy" class="{% if request.url.path.startswith('/proxy') %}active{% endif %}"><span class="nav-dot"></span>Proxy</a>
+      <a href="/nodes" class="{% if request.url.path == '/nodes' %}active{% endif %}"><span class="nav-dot"></span>Ноды</a>
+      <a href="/certs" class="{% if request.url.path == '/certs' %}active{% endif %}"><span class="nav-dot nav-dot-red"></span>Сертификаты</a>
+      <a href="/profile" class="{% if request.url.path == '/profile' %}active{% endif %}"><span class="nav-dot"></span>Кабинет</a>
+    </nav>
+    <form action="/logout" method="post" class="logout-form">
+      <button type="submit" class="btn btn-red">Logout</button>
+    </form>
+  </aside>
+  <main class="main">
+    <div class="main-inner">
+    <div class="topbar">
+      <span class="pulse"></span> operator: <strong>{{ admin.username }}</strong>
+    </div>
+    {% block content %}{% endblock %}
+    </div>
+  </main>
+</div>
+{% else %}
+  {% block bare %}{% endblock %}
+{% endif %}
+</body>
+</html>

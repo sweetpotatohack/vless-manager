@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block content %}
+<h2 class="page-title"><span class="title-accent">//</span> Сертификаты</h2>
+<p class="muted">Состояние на {{ data.checked_at.strftime('%Y-%m-%d %H:%M UTC') }}</p>
+
+{% if flash_ok %}
+<div class="alert alert-ok animate-in">{{ flash_ok }}</div>
+{% endif %}
+{% if flash_err %}
+<div class="alert alert-error animate-in">{{ flash_err }}</div>
+{% endif %}
+
+<div class="card card-glow">
+  <h3 class="card-title">Управление</h3>
+  <div class="actions-grid">
+    <form method="post" action="/certs/renew" class="action-block">
+      <p><strong>Продление</strong> — текущий DNS ({{ tls.public_host or 'из tls.env' }})</p>
+      <input type="hidden" name="cert_name" value="">
+      <button type="submit" class="btn btn-blue">Продлить LE сейчас</button>
+    </form>
+    <form method="post" action="/certs/reissue" class="action-block">
+      <p><strong>Перевыпуск</strong> — новый DNS (standalone :80)</p>
+      <label>Домен</label>
+      <input type="text" name="domain" required placeholder="vpn.example.com">
+      <label>Email LE</label>
+      <input type="text" name="email" placeholder="{{ tls.email or 'email' }}">
+      <button type="submit" class="btn btn-red">Выпустить на новый DNS</button>
+    </form>
+    <form method="post" action="/certs/sync-hysteria" class="action-block">
+      <p><strong>Hysteria2</strong> — скопировать LE → /etc/hysteria/certs</p>
+      <button type="submit" class="btn btn-cyan">Синхронизировать Hysteria</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <h3 class="card-title">Автопродление</h3>
+  <form method="post" action="/certs/settings">
+    <label class="check-line">
+      <input type="checkbox" name="auto_renew" {% if settings.auto_renew_enabled %}checked{% endif %}>
+      Включить автопродление (проверка каждый час)
+    </label>
+    <label>Срабатывает, когда до конца сертификата ≤ дней:</label>
+    <input type="number" name="auto_renew_days" min="1" max="30" value="{{ settings.auto_renew_days or 3 }}" class="input-sm">
+    <div class="form-actions"><button type="submit" class="btn btn-blue">Сохранить автопродление</button></div>
+  </form>
+  <p class="muted small">При срабатывании: <code>certbot renew</code> + копия в Hysteria. Оповещения — в «Кабинет».</p>
+</div>
+
+<div class="card">
+  <h3 class="card-title">Certbot timer</h3>
+  <p>Активен: <strong>{{ data.timer.active or '—' }}</strong>
+  {% if data.timer.next %} · {{ data.timer.next }}{% endif %}</p>
+</div>
+
+<div class="card">
+  <h3 class="card-title">Let's Encrypt</h3>
+  <table>
+    <thead><tr><th>Имя</th><th>Домены</th><th>Истекает</th><th>Дней</th><th>Статус</th></tr></thead>
+    <tbody>
+    {% for c in data.certificates %}
+      <tr>
+        <td><code>{{ c.name }}</code></td>
+        <td>{{ c.domains|join(', ') }}</td>
+        <td>{% if c.expiry %}{{ c.expiry.strftime('%Y-%m-%d %H:%M') }}{% else %}—{% endif %}</td>
+        <td>{{ c.days_left if c.days_left is not none else '—' }}</td>
+        <td>
+          {% if c.days_left is not none and c.days_left < 0 %}<span class="badge badge-bad">истёк</span>
+          {% elif c.days_left is not none and c.days_left <= 3 %}<span class="badge badge-warn">≤3 дн</span>
+          {% elif c.days_left is not none and c.days_left < 14 %}<span class="badge badge-warn">скоро</span>
+          {% else %}<span class="badge badge-ok">ok</span>{% endif %}
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5">Нет данных certbot</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if data.hysteria %}
+<div class="card">
+  <h3 class="card-title">Hysteria2 copy</h3>
+  <p><code>{{ data.hysteria.cert_path }}</code></p>
+  <p>Дней: {{ data.hysteria.days_left if data.hysteria.days_left is not none else '—' }}</p>
+</div>
+{% endif %}
+{% endblock %}

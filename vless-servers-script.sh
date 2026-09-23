@@ -13,6 +13,43 @@ CONFIG_DIR="/etc/vless-manager/clients"
 PID_DIR="/var/run"
 LOG_DIR="/var/log"
 
+port_is_listening() {
+    local p="$1"
+    if command -v ss >/dev/null 2>&1; then
+        ss -H -tuln "sport = :$p" 2>/dev/null | grep -q .
+        return $?
+    fi
+    netstat -tln 2>/dev/null | grep -q ":$p "
+}
+
+get_config_port() {
+    local config_file="$1"
+    grep -o '"port": [0-9]*' "$config_file" 2>/dev/null | head -1 | awk '{print $2}'
+}
+
+find_port_conflict() {
+    local client_name="$1"
+    local port="$2"
+    local other other_port other_pid other_pid_file
+
+    for other in $(get_all_clients); do
+        [[ "$other" == "$client_name" ]] && continue
+        other_port=$(get_config_port "${CONFIG_DIR}/${other}.json")
+        [[ -n "$other_port" && "$other_port" == "$port" ]] || continue
+        other_pid_file="${PID_DIR}/vless-${other}.pid"
+        if [[ -f "$other_pid_file" ]]; then
+            other_pid=$(cat "$other_pid_file")
+            if kill -0 "$other_pid" 2>/dev/null; then
+                echo "$other"
+                return 0
+            fi
+        fi
+        echo "$other"
+        return 0
+    done
+    return 1
+}
+
 start_single_server() {
     local client_name="$1"
     local config_file="${CONFIG_DIR}/${client_name}.json"
@@ -34,6 +71,21 @@ start_single_server() {
         fi
     fi
     
+    local port
+    port=$(get_config_port "$config_file")
+    if [ -n "$port" ]; then
+        local conflict
+        if conflict=$(find_port_conflict "$client_name" "$port"); then
+            echo -e "${RED}❌ Порт $port уже назначен клиенту $conflict${NC}"
+            echo -e "${YELLOW}⚠️  Запустите: vless-manager → Настройки → Исправить дублирующиеся порты${NC}"
+            return 1
+        fi
+        if port_is_listening "$port"; then
+            echo -e "${RED}❌ Порт $port уже занят другим процессом${NC}"
+            return 1
+        fi
+    fi
+
     echo -e "${BLUE}🚀 Запускаем сервер для $client_name...${NC}"
     nohup xray run -config "$config_file" > "$log_file" 2>&1 &
     local new_pid=$!
@@ -42,13 +94,16 @@ start_single_server() {
     sleep 3
     if kill -0 "$new_pid" 2>/dev/null; then
         echo -e "${GREEN}✅ Сервер для $client_name запущен успешно (PID: $new_pid)${NC}"
-        local port=$(grep -o '"port": [0-9]*' "$config_file" | cut -d' ' -f2)
-        if [ -n "$port" ] && netstat -tln | grep -q ":$port "; then
+        if [ -n "$port" ] && port_is_listening "$port"; then
             echo -e "${GREEN}✅ Порт $port прослушивается${NC}"
         fi
         return 0
     else
         echo -e "${RED}❌ Не удалось запустить сервер для $client_name${NC}"
+        if [ -f "$log_file" ]; then
+            echo -e "${YELLOW}Последние строки лога:${NC}"
+            tail -5 "$log_file" 2>/dev/null || true
+        fi
         rm -f "$pid_file"
         return 1
     fi
@@ -104,7 +159,7 @@ status_single_server() {
 
 get_all_clients() {
     if [ -d "$CONFIG_DIR" ]; then
-        ls "$CONFIG_DIR"/*.json 2>/dev/null | xargs -r basename -s .json
+        ls "$CONFIG_DIR"/*.json 2>/dev/null | xargs -r basename -s .json | grep -v '^_mobile-reality$' || true
     fi
 }
 

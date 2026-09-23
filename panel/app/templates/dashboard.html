@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Обзор</h2>
+<div class="grid-3">
+  <div class="card stat">
+    <div class="label">Активных нод</div>
+    <div class="value">{{ nodes|length }}</div>
+  </div>
+  <div class="card stat">
+    <div class="label">Клиентов (proxy)</div>
+    <div class="value">{{ users_count }}</div>
+  </div>
+  <div class="card stat">
+    <div class="label">Сертификат (мин. дней)</div>
+    <div class="value">
+      {% if cert_min_days is not none %}
+        {% if cert_min_days < 14 %}<span class="badge badge-warn">{{ cert_min_days }}</span>
+        {% elif cert_min_days < 0 %}<span class="badge badge-bad">истёк</span>
+        {% else %}<span class="badge badge-ok">{{ cert_min_days }}</span>{% endif %}
+      {% else %}—{% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0">Ноды</h3>
+  <table>
+    <thead><tr><th>Имя</th><th>Домен</th><th>Регион</th><th>Роль</th></tr></thead>
+    <tbody>
+    {% for n in nodes %}
+      <tr>
+        <td>{{ n.name }}</td>
+        <td>{{ n.domain }}</td>
+        <td>{{ n.region }}</td>
+        <td>{{ n.role }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p style="margin-top:1rem"><a href="/proxy" class="btn btn-blue">Выдать конфиг клиенту</a></p>
+</div>
+
+<p style="color:var(--muted);font-size:0.85rem">Проверка сертификатов: {{ cert_checked.strftime('%Y-%m-%d %H:%M UTC') }} · <a href="/certs">подробнее</a></p>
+{% endblock %}

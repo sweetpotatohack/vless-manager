@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Ноды</h2>
+<p style="color:var(--muted)">Master: <code>{{ master_url }}</code></p>
+
+{% if new_node and install_cmd %}
+<div class="card alert alert-ok">
+  <h3 style="margin-top:0">Агент создан: {{ new_node.name }}</h3>
+  <p>Страна: <strong>{{ new_node.country }}</strong> · статус: <strong>{{ new_node.agent_status }}</strong></p>
+  <p>На новом Linux VPS (root):</p>
+  <div class="url-box">{{ install_cmd }}</div>
+  <p>
+    <a class="btn btn-amber" href="/nodes/{{ new_node.id }}/install.sh">Скачать install.sh</a>
+  </p>
+  <p style="color:var(--muted);font-size:0.85rem">После установки нода станет <strong>online</strong> и появится в Proxy.</p>
+</div>
+{% endif %}
+
+<div class="card">
+  <h3 style="margin-top:0">Страна master-ноды (для Proxy)</h3>
+  <form method="post" action="/nodes/local-country" class="form-narrow">
+    <label>Как показывать страну выхода для этого сервера</label>
+    <input type="text" name="country" required placeholder="Germany (EU)" value="{{ local_country or '' }}">
+    <button type="submit" class="btn btn-blue">Сохранить</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0">Сгенерировать агент (новая нода)</h3>
+  <form method="post" action="/nodes/generate-agent">
+    <label>Название ноды</label>
+    <input type="text" name="name" required placeholder="frankfurt-1">
+    <label>Страна (для выбора в Proxy)</label>
+    <input type="text" name="country" required placeholder="Germany / USA / Singapore">
+    <label>Домен VPN (можно позже, если ещё нет)</label>
+    <input type="text" name="domain" placeholder="vpn.example.com">
+    <button type="submit" class="btn btn-cyan btn-lg">Сгенерировать агент</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0">Список нод</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Имя</th>
+        <th>Страна</th>
+        <th>IP</th>
+        <th>Домен</th>
+        <th>Статус</th>
+        <th>Роль</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for n in nodes %}
+      <tr>
+        <td>{{ n.name }}</td>
+        <td>{{ n.country or n.region }}</td>
+        <td>{{ n.public_ip or '—' }}</td>
+        <td>{{ n.domain }}</td>
+        <td>
+          {% if n.agent_status == 'online' %}<span class="badge badge-ok">online</span>
+          {% else %}<span class="badge badge-warn">{{ n.agent_status }}</span>{% endif %}
+        </td>
+        <td>{{ n.role }}</td>
+        <td>
+          {% if n.api_token and n.role == 'remote' %}
+          <a href="/nodes/{{ n.id }}/install.sh">install.sh</a>
+          {% else %}—{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

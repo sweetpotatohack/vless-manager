@@ -1,0 +1,704 @@
+from __future__ import annotations
+
+import asyncio
+import io
+import re
+import secrets
+import tarfile
+from urllib.parse import quote
+from datetime import datetime
+from pathlib import Path
+
+from fastapi import Depends, FastAPI, Form, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from sqlalchemy.orm import Session
+
+from app.auth import hash_password, verify_password
+from app.bootstrap import ensure_default_admin, ensure_local_node
+from app.config import (
+    APP_TITLE,
+    DATA_DIR,
+    QR_DIR,
+    SESSION_COOKIE,
+    SESSION_MAX_AGE,
+    VLESS_CONFIG_DIR,
+)
+from app.database import Base, engine, get_db
+from app.deps import create_session_token, get_current_admin, get_optional_admin
+from app.migrate import run_migrations
+from app.models import AdminUser, Node, ProxyUser
+from app.services.agent_script import render_agent_install_script
+from app.services.autorenew_task import cert_autorenew_worker
+from app.services.cert_actions import (
+    reissue_new_domain,
+    renew_certificates,
+    sync_hysteria_from_le,
+)
+from app.services.certs import all_cert_status
+from app.services.settings import get_settings
+from app.services.master_url import get_master_public_url
+from app.services.ports import port_status
+from app.services.provision import provision_local, provision_remote, qr_png_path
+
+APP_DIR = Path(__file__).resolve().parent
+REPO_PANEL = APP_DIR.parent
+REPO_ROOT = REPO_PANEL.parent
+templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
+
+app = FastAPI(title=APP_TITLE)
+app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
+
+
+@app.exception_handler(HTTPException)
+async def panel_http_exception_handler(request: Request, exc: HTTPException):
+    """Браузер → /login, API → JSON."""
+    if exc.status_code in (401, 403) and not request.url.path.startswith("/api/"):
+        return RedirectResponse(url="/login", status_code=303)
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+
+@app.on_event("startup")
+async def on_startup():
+    Base.metadata.create_all(bind=engine)
+    run_migrations()
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        ensure_default_admin(db)
+        ensure_local_node(db)
+        get_settings(db)
+    finally:
+        db.close()
+    asyncio.create_task(cert_autorenew_worker())
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request, admin: AdminUser | None = Depends(get_optional_admin)):
+    if admin:
+        return RedirectResponse("/dashboard", status_code=303)
+    return templates.TemplateResponse(
+        "login.html",
+        {"request": request, "title": "Control Panel", "error": None},
+    )
+
+
+@app.post("/login")
+def login_submit(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    admin = db.query(AdminUser).filter(AdminUser.username == username.strip()).first()
+    if not admin or not verify_password(password, admin.password_hash):
+        return templates.TemplateResponse(
+            "login.html",
+            {
+                "request": request,
+                "title": APP_TITLE,
+                "error": "Неверный логин или пароль",
+            },
+            status_code=401,
+        )
+
+    token = create_session_token(admin.id)
+    resp = RedirectResponse("/dashboard", status_code=303)
+    resp.set_cookie(
+        SESSION_COOKIE,
+        token,
+        httponly=True,
+        samesite="lax",
+        max_age=SESSION_MAX_AGE,
+        secure=False,
+    )
+    return resp
+
+
+@app.post("/logout")
+def logout():
+    resp = RedirectResponse("/login", status_code=303)
+    resp.delete_cookie(SESSION_COOKIE)
+    return resp
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard(
+    request: Request,
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    nodes = db.query(Node).filter(Node.is_active.is_(True)).order_by(Node.name).all()
+    users_count = db.query(ProxyUser).count()
+    cert_data = all_cert_status()
+    min_days = None
+    for c in cert_data["certificates"]:
+        if c.days_left is not None:
+            min_days = c.days_left if min_days is None else min(min_days, c.days_left)
+    hy = cert_data.get("hysteria")
+    if hy and hy.days_left is not None:
+        min_days = hy.days_left if min_days is None else min(min_days, hy.days_left)
+
+    return templates.TemplateResponse(
+        "dashboard.html",
+        {
+            "request": request,
+            "title": APP_TITLE,
+            "admin": admin,
+            "nodes": nodes,
+            "users_count": users_count,
+            "cert_min_days": min_days,
+            "cert_checked": cert_data["checked_at"],
+        },
+    )
+
+
+def _node_by_agent_token(db: Session, token: str) -> Node | None:
+    return db.query(Node).filter(Node.api_token == token).first()
+
+
+@app.get("/nodes", response_class=HTMLResponse)
+def nodes_page(
+    request: Request,
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+    created: int | None = None,
+):
+    nodes = db.query(Node).order_by(Node.country, Node.name).all()
+    master_url = get_master_public_url(request)
+    new_node = db.get(Node, created) if created else None
+    local_country = None
+    lf = DATA_DIR / "local-country.txt"
+    if lf.is_file():
+        local_country = lf.read_text().strip()
+    if not local_country:
+        loc = db.query(Node).filter(Node.role == "local").first()
+        local_country = loc.country if loc else ""
+    install_cmd = None
+    if new_node and new_node.api_token:
+        install_cmd = (
+            f"curl -fsSL '{master_url}/api/v1/agent/install.sh?token={new_node.api_token}' | bash"
+        )
+    return templates.TemplateResponse(
+        "nodes.html",
+        {
+            "request": request,
+            "title": APP_TITLE,
+            "admin": admin,
+            "nodes": nodes,
+            "master_url": master_url,
+            "new_node": new_node,
+            "install_cmd": install_cmd,
+            "local_country": local_country,
+        },
+    )
+
+
+@app.post("/nodes/local-country")
+def nodes_set_local_country(
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+    country: str = Form(...),
+):
+    country = country.strip()
+    if country:
+        (DATA_DIR / "local-country.txt").write_text(country + "\n")
+    node = db.query(Node).filter(Node.role == "local").first()
+    if node and country:
+        node.country = country
+        db.commit()
+    return RedirectResponse("/nodes", status_code=303)
+
+
+@app.post("/nodes/generate-agent")
+def nodes_generate_agent(
+    request: Request,
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+    name: str = Form(...),
+    country: str = Form(...),
+    domain: str = Form(""),
+):
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:60] or secrets.token_hex(4)
+    if db.query(Node).filter(Node.slug == slug).first():
+        slug = f"{slug}-{secrets.token_hex(3)}"
+    token = secrets.token_hex(24)
+    node = Node(
+        name=name.strip(),
+        slug=slug,
+        domain=(domain.strip() or f"{slug}.local"),
+        region=country.strip(),
+        country=country.strip(),
+        public_ip="",
+        role="remote",
+        api_base=None,
+        api_token=token,
+        agent_status="pending",
+        is_active=False,
+    )
+    db.add(node)
+    db.commit()
+    db.refresh(node)
+    return RedirectResponse(f"/nodes?created={node.id}", status_code=303)
+
+
+@app.get("/nodes/{node_id}/install.sh")
+def download_agent_script(
+    node_id: int,
+    request: Request,
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    node = db.get(Node, node_id)
+    if not node or not node.api_token:
+        raise HTTPException(404)
+    master = get_master_public_url(request)
+    body = render_agent_install_script(
+        master_url=master,
+        node_token=node.api_token,
+        node_name=node.name,
+    )
+    return Response(
+        content=body,
+        media_type="application/x-sh",
+        headers={
+            "Content-Disposition": f'attachment; filename="vless-agent-{node.slug}.sh"'
+        },
+    )
+
+
+@app.get("/proxy", response_class=HTMLResponse)
+def proxy_list(
+    request: Request,
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    nodes = (
+        db.query(Node)
+        .filter(Node.is_active.is_(True), Node.agent_status == "online")
+        .order_by(Node.country, Node.name)
+        .all()
+    )
+    if not nodes:
+        nodes = db.query(Node).filter(Node.is_active.is_(True)).order_by(Node.name).all()
+    users = (
+        db.query(ProxyUser)
+        .order_by(ProxyUser.created_at.desc())
+        .limit(100)
+        .all()
+    )
+    return templates.TemplateResponse(
+        "proxy.html",
+        {
+            "request": request,
+            "title": APP_TITLE,
+            "admin": admin,
+            "nodes": nodes,
+            "users": users,
+            "error": None,
+        },
+    )
+
+
+@app.post("/proxy")
+async def proxy_create(
+    request: Request,
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+    node_id: int = Form(...),
+    username: str = Form(...),
+    wifi: str | None = Form(None),
+    mobile: str | None = Form(None),
+):
+    node = db.get(Node, node_id)
+    if not node or not node.is_active:
+        raise HTTPException(400, "Нода недоступна — дождитесь online или выберите master")
+    do_wifi = wifi == "on"
+    do_mobile = mobile == "on"
+    if not do_wifi and not do_mobile:
+        raise HTTPException(400, "Выберите Wi‑Fi и/или LTE профиль")
+
+    api_base = node.api_base
+    if node.role == "local":
+        api_base = api_base or "http://127.0.0.1:8765"
+        result = await asyncio.to_thread(
+            provision_local,
+            username.strip(),
+            wifi=do_wifi,
+            mobile=do_mobile,
+        )
+    else:
+        if not api_base or not node.api_token:
+            raise HTTPException(400, "Нода ещё не зарегистрирована агентом")
+        result = await provision_remote(
+            api_base,
+            node.api_token,
+            username.strip(),
+            wifi=do_wifi,
+            mobile=do_mobile,
+        )
+
+    if not result.ok:
+        nodes = db.query(Node).filter(Node.is_active.is_(True)).all()
+        users = db.query(ProxyUser).order_by(ProxyUser.created_at.desc()).limit(100).all()
+        return templates.TemplateResponse(
+            "proxy.html",
+            {
+                "request": request,
+                "title": APP_TITLE,
+                "admin": admin,
+                "nodes": nodes,
+                "users": users,
+                "error": result.message,
+            },
+            status_code=400,
+        )
+
+    pu = ProxyUser(
+        node_id=node.id,
+        username=username.strip(),
+        has_wifi=do_wifi,
+        has_mobile=do_mobile,
+        wifi_vless_url=result.wifi_vless_url,
+        mobile_vless_url=result.mobile_vless_url,
+        hysteria_url=result.hysteria_url,
+        wifi_port=result.wifi_port,
+        uuid=result.uuid,
+        exit_country=node.country or node.region,
+        exit_ip=node.public_ip or "",
+    )
+    db.add(pu)
+    db.commit()
+    db.refresh(pu)
+    return RedirectResponse(f"/proxy/{pu.id}", status_code=303)
+
+
+@app.get("/proxy/{user_id}", response_class=HTMLResponse)
+def proxy_detail(
+    user_id: int,
+    request: Request,
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    pu = db.get(ProxyUser, user_id)
+    if not pu:
+        raise HTTPException(404)
+    node = db.get(Node, pu.node_id)
+    mob_name = f"{pu.username}-mob" if pu.has_wifi and pu.has_mobile else pu.username
+    qr_wifi = qr_png_path(pu.username, "wifi")
+    qr_mobile = qr_png_path(mob_name, "mobile")
+    return templates.TemplateResponse(
+        "proxy_detail.html",
+        {
+            "request": request,
+            "title": APP_TITLE,
+            "admin": admin,
+            "user": pu,
+            "node": node,
+            "qr_wifi": qr_wifi.name if qr_wifi else None,
+            "qr_mobile": qr_mobile.name if qr_mobile else None,
+        },
+    )
+
+
+@app.get("/qr/{filename}")
+def serve_qr(filename: str, admin: AdminUser = Depends(get_current_admin)):
+    if not re.match(r"^[a-zA-Z0-9._-]+\.png$", filename):
+        raise HTTPException(400)
+    path = QR_DIR / filename
+    if not path.is_file():
+        raise HTTPException(404)
+    return FileResponse(path, media_type="image/png")
+
+
+@app.get("/certs", response_class=HTMLResponse)
+def certs_page(
+    request: Request,
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+    msg: str | None = None,
+    err: str | None = None,
+):
+    data = all_cert_status()
+    settings = get_settings(db)
+    tls = {}
+    tls_env = VLESS_CONFIG_DIR / "tls.env"
+    if tls_env.is_file():
+        for line in tls_env.read_text().splitlines():
+            if line.startswith("PUBLIC_HOST="):
+                tls["public_host"] = line.split("=", 1)[1].strip()
+            if line.startswith("LE_EMAIL="):
+                tls["email"] = line.split("=", 1)[1].strip()
+    return templates.TemplateResponse(
+        "certs.html",
+        {
+            "request": request,
+            "title": APP_TITLE,
+            "admin": admin,
+            "data": data,
+            "settings": settings,
+            "tls": tls,
+            "flash_ok": msg,
+            "flash_err": err,
+        },
+    )
+
+
+@app.post("/certs/renew")
+async def certs_renew(
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+    cert_name: str = Form(""),
+):
+    result = await asyncio.to_thread(renew_certificates, cert_name.strip() or None)
+    from app.services.notify import notify_admin
+
+    settings = get_settings(db)
+    await notify_admin(settings, "Сертификат: renew", result.message)
+    if result.ok:
+        return RedirectResponse(f"/certs?msg={quote(result.message[:200])}", status_code=303)
+    return RedirectResponse(f"/certs?err={quote(result.message[:200])}", status_code=303)
+
+
+@app.post("/certs/reissue")
+async def certs_reissue(
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+    domain: str = Form(...),
+    email: str = Form(""),
+):
+    result = await asyncio.to_thread(reissue_new_domain, domain, email.strip() or None)
+    from app.services.notify import notify_admin
+
+    settings = get_settings(db)
+    await notify_admin(settings, "Сертификат: новый DNS", result.message)
+    if result.ok:
+        return RedirectResponse(f"/certs?msg={quote(result.message[:200])}", status_code=303)
+    return RedirectResponse(f"/certs?err={quote(result.message[:200])}", status_code=303)
+
+
+@app.post("/certs/sync-hysteria")
+async def certs_sync_hysteria(admin: AdminUser = Depends(get_current_admin)):
+    result = await asyncio.to_thread(sync_hysteria_from_le)
+    if result.ok:
+        return RedirectResponse(f"/certs?msg={result.message}", status_code=303)
+    return RedirectResponse(f"/certs?err={result.message[:200]}", status_code=303)
+
+
+@app.post("/certs/settings")
+def certs_settings(
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+    auto_renew: str | None = Form(None),
+    auto_renew_days: int = Form(3),
+):
+    settings = get_settings(db)
+    settings.auto_renew_enabled = auto_renew == "on"
+    settings.auto_renew_days = max(1, min(30, auto_renew_days))
+    db.commit()
+    return RedirectResponse("/certs?msg=Настройки автопродления сохранены", status_code=303)
+
+
+@app.get("/profile", response_class=HTMLResponse)
+def profile_page(
+    request: Request,
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+    msg: str | None = None,
+    err: str | None = None,
+):
+    settings = get_settings(db)
+    return templates.TemplateResponse(
+        "profile.html",
+        {
+            "request": request,
+            "title": APP_TITLE,
+            "admin": admin,
+            "settings": settings,
+            "flash_ok": msg,
+            "flash_err": err,
+        },
+    )
+
+
+@app.post("/profile/password")
+def profile_password(
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+    current_password: str = Form(...),
+    new_password: str = Form(...),
+    new_password2: str = Form(...),
+):
+    if not verify_password(current_password, admin.password_hash):
+        return RedirectResponse("/profile?err=Неверный текущий пароль", status_code=303)
+    if len(new_password) < 6:
+        return RedirectResponse("/profile?err=Новый пароль ≥ 6 символов", status_code=303)
+    if new_password != new_password2:
+        return RedirectResponse("/profile?err=Пароли не совпадают", status_code=303)
+    admin.password_hash = hash_password(new_password)
+    db.commit()
+    return RedirectResponse("/profile?msg=Пароль изменён", status_code=303)
+
+
+@app.post("/profile/notifications")
+def profile_notifications(
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+    telegram_bot_token: str = Form(""),
+    telegram_chat_id: str = Form(""),
+    notify_email: str = Form(""),
+    notify_on_cert: str | None = Form(None),
+):
+    settings = get_settings(db)
+    settings.telegram_bot_token = telegram_bot_token.strip()
+    settings.telegram_chat_id = telegram_chat_id.strip()
+    settings.notify_email = notify_email.strip()
+    settings.notify_on_cert = notify_on_cert == "on"
+    db.commit()
+    return RedirectResponse("/profile?msg=Оповещения сохранены", status_code=303)
+
+
+# --- Agent API ---
+
+
+@app.get("/api/v1/health")
+def api_health():
+    return {"ok": True, "service": "vless-panel"}
+
+
+def _authorize_agent_api(request: Request, db: Session) -> None:
+    import os
+
+    auth = request.headers.get("Authorization")
+    token = ""
+    if auth and auth.startswith("Bearer "):
+        token = auth.removeprefix("Bearer ").strip()
+    expected = os.environ.get("VLESS_PANEL_AGENT_TOKEN", "").strip()
+    if expected and token == expected:
+        return
+    if token and _node_by_agent_token(db, token):
+        return
+    raise HTTPException(403, "Invalid agent token")
+
+
+@app.get("/api/v1/ports")
+def api_ports(request: Request, db: Session = Depends(get_db)):
+    _authorize_agent_api(request, db)
+    return port_status()
+
+
+@app.get("/api/v1/agent/install.sh")
+def api_agent_install_sh(token: str, request: Request, db: Session = Depends(get_db)):
+    node = _node_by_agent_token(db, token)
+    if not node:
+        raise HTTPException(404, "Invalid token")
+    master = get_master_public_url(request)
+    return Response(
+        content=render_agent_install_script(
+            master_url=master,
+            node_token=token,
+            node_name=node.name,
+        ),
+        media_type="text/plain; charset=utf-8",
+    )
+
+
+def _bundle_paths() -> list[tuple[str, Path]]:
+    panel_src = REPO_PANEL
+    if not (panel_src / "install_panel.sh").is_file():
+        panel_src = Path("/opt/vless-manager/panel")
+    mgr = REPO_ROOT / "vless_manager.sh"
+    if not mgr.is_file():
+        mgr = Path("/opt/vless-manager/vless_manager.sh")
+    items: list[tuple[str, Path]] = []
+    if panel_src.is_dir():
+        for p in panel_src.rglob("*"):
+            if p.is_file() and "venv" not in p.parts and "__pycache__" not in p.parts:
+                items.append((f"panel/{p.relative_to(panel_src)}", p))
+    if mgr.is_file():
+        items.append(("vless_manager.sh", mgr))
+    inst = REPO_ROOT / "install_vless_manager.sh"
+    if not inst.is_file():
+        inst = Path("/opt/vless-manager/install_vless_manager.sh")
+    if inst.is_file():
+        items.append(("install_vless_manager.sh", inst))
+    vss = REPO_ROOT / "vless-servers-script.sh"
+    if vss.is_file():
+        items.append(("vless-servers-script.sh", vss))
+    return items
+
+
+@app.get("/api/v1/agent/bundle.tar.gz")
+def api_agent_bundle(token: str, db: Session = Depends(get_db)):
+    node = _node_by_agent_token(db, token)
+    if not node:
+        raise HTTPException(403, "Invalid token")
+    items = _bundle_paths()
+    if not items:
+        raise HTTPException(500, "Bundle sources not found on master")
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for arcname, path in items:
+            tar.add(path, arcname=arcname)
+    buf.seek(0)
+    return Response(content=buf.getvalue(), media_type="application/gzip")
+
+
+@app.post("/api/v1/nodes/register")
+async def api_nodes_register(request: Request, db: Session = Depends(get_db)):
+    body = await request.json()
+    token = (body.get("token") or "").strip()
+    node = _node_by_agent_token(db, token)
+    if not node:
+        raise HTTPException(404, "Unknown token")
+    node.public_ip = (body.get("public_ip") or node.public_ip or "").strip()
+    if body.get("domain"):
+        node.domain = body["domain"].strip()
+    if body.get("country") and not node.country:
+        node.country = body["country"].strip()
+    api_base = (body.get("api_base") or "").strip()
+    if api_base:
+        node.api_base = api_base.rstrip("/")
+    elif node.public_ip:
+        node.api_base = f"http://{node.public_ip}:8765"
+    node.agent_status = "online"
+    node.is_active = True
+    node.last_seen = datetime.utcnow()
+    db.commit()
+    return {"ok": True, "node_id": node.id, "name": node.name}
+
+
+@app.post("/api/v1/provision")
+async def api_provision(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    _authorize_agent_api(request, db)
+    body = await request.json()
+    username = body.get("username", "")
+    wifi = bool(body.get("wifi"))
+    mobile = bool(body.get("mobile"))
+    from app.services.ports import ensure_can_provision
+
+    ok, msg = ensure_can_provision(wifi=wifi, mobile=mobile)
+    if not ok:
+        raise HTTPException(400, msg)
+    result = provision_local(username, wifi=wifi, mobile=mobile)
+    if not result.ok:
+        raise HTTPException(400, result.message)
+    return {
+        "wifi_vless_url": result.wifi_vless_url,
+        "mobile_vless_url": result.mobile_vless_url,
+        "hysteria_url": result.hysteria_url,
+        "wifi_port": result.wifi_port,
+        "uuid": result.uuid,
+    }
+
+
+@app.get("/", include_in_schema=False)
+def root(admin: AdminUser | None = Depends(get_optional_admin)):
+    if admin:
+        return RedirectResponse("/dashboard", status_code=303)
+    return RedirectResponse("/login", status_code=303)

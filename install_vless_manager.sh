@@ -609,7 +609,54 @@ EOS
     log_info "URL: $VLESS_URL"
 }
 
+install_web_panel() {
+    local role="${VLESS_PANEL_ROLE:-master}"
+    if [[ ! -x "$REPO_ROOT/panel/install_panel.sh" ]]; then
+        log_warn "panel/install_panel.sh не найден — web-панель пропущена"
+        return 0
+    fi
+    log_info "Web Control Panel / Agent API (systemd: vless-panel, vless-agent)..."
+    export VLESS_PANEL_ROLE="$role"
+    bash "$REPO_ROOT/panel/install_panel.sh"
+    log_info "Панель: http://$(hostname -f 2>/dev/null || echo 127.0.0.1):8765/login"
+}
+
+remote_agent_install() {
+    log_info "Режим удалённого агента (--remote-agent)..."
+    check_root
+    REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export REPO_ROOT
+    detect_system
+    install_dependencies
+    install_xray
+    setup_directories
+    if [[ ! -f "$CONFIG_DIR/tls.env" ]]; then
+        write_tls_env_selfsigned
+    fi
+    cp -f "$REPO_ROOT/vless_manager.sh" "$INSTALL_DIR/" 2>/dev/null || mkdir -p "$INSTALL_DIR" && cp -f "$REPO_ROOT/vless_manager.sh" "$INSTALL_DIR/"
+    chmod +x "$INSTALL_DIR/vless_manager.sh"
+    cp -f "$REPO_ROOT/vless-servers-script.sh" /usr/local/bin/vless-servers 2>/dev/null || true
+    chmod +x /usr/local/bin/vless-servers 2>/dev/null || true
+    cp -f "$REPO_ROOT/install_vless_manager.sh" "$INSTALL_DIR/" 2>/dev/null || true
+    install_systemd_vless_service
+    systemctl start vless-xray.service 2>/dev/null || /usr/local/bin/vless-servers start 2>/dev/null || true
+    if command -v ufw >/dev/null 2>&1; then
+        ufw allow 8765/tcp comment 'vless-panel' 2>/dev/null || true
+        ufw allow "${VLESS_IPT_MIN}:${VLESS_IPT_MAX}/tcp" 2>/dev/null || true
+        ufw allow 25001/udp 2>/dev/null || true
+        ufw allow 443/tcp 2>/dev/null || true
+    fi
+    export VLESS_PANEL_ROLE=agent
+    install_web_panel
+    log_info "Агент установлен: systemctl status vless-panel vless-agent"
+}
+
 main() {
+    if [[ "${1:-}" == "--remote-agent" ]]; then
+        remote_agent_install
+        exit 0
+    fi
+
     banner
     
     log_info "Starting VLESS Manager Pro v${INSTALL_VERSION} installation..."
@@ -630,6 +677,7 @@ main() {
     
     cp "$REPO_ROOT/vless_manager.sh" "$INSTALL_DIR/" 2>/dev/null || log_warn "vless_manager.sh не скопирован из $REPO_ROOT"
     chmod +x "$INSTALL_DIR/vless_manager.sh" 2>/dev/null || true
+    cp -f "$REPO_ROOT/install_vless_manager.sh" "$INSTALL_DIR/" 2>/dev/null || true
     ln -sf "$INSTALL_DIR/vless_manager.sh" /usr/local/bin/vless-manager 2>/dev/null || true
     cp -f "$REPO_ROOT/vless-servers-script.sh" /usr/local/bin/vless-servers 2>/dev/null || log_warn "vless-servers не скопирован"
     chmod +x /usr/local/bin/vless-servers 2>/dev/null || true
@@ -637,6 +685,8 @@ main() {
     
     create_sample_client
     install_systemd_vless_service
+    export VLESS_PANEL_ROLE=master
+    install_web_panel
     
     systemctl start vless-xray.service 2>/dev/null || {
         log_warn "systemctl start vless-xray не удался, запускаю vless-servers start"
@@ -650,6 +700,7 @@ main() {
     echo
     echo -e "${WHITE}📋 Команды:${NC}"
     echo -e "   ${YELLOW}systemctl status vless-xray${NC}   # Статус Xray (автозапуск)"
+    echo -e "   ${YELLOW}systemctl status vless-panel${NC}  # Web Control Panel :8765"
     echo -e "   ${YELLOW}vless-manager${NC}                 # Меню управления клиентами"
     echo -e "   ${YELLOW}vless-servers status${NC}          # Статус процессов"
     echo -e "   ${YELLOW}cat ${CONFIG_DIR}/urls/sample_client.txt${NC}  # Пример VLESS URL"

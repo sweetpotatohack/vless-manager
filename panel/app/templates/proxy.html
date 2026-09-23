@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Proxy — выдача конфигов</h2>
+
+<div class="card">
+  <h3 style="margin-top:0">Новый пользователь</h3>
+  {% if error %}
+  <div class="alert alert-error">{{ error }}</div>
+  {% endif %}
+  <form method="post" action="/proxy" id="proxy-form">
+    <label>1. Имя пользователя (латиница)</label>
+    <input type="text" name="username" required placeholder="maks" autocomplete="off" minlength="1" maxlength="63">
+
+    <label>2. Страна выхода</label>
+    <div class="info-strip" id="country-box">
+      <span>🌍</span>
+      <strong id="country-label">—</strong>
+      <span class="muted">IP</span>
+      <strong id="ip-label">—</strong>
+    </div>
+
+    <label>3. Нода (сервер)</label>
+    <select name="node_id" id="node-select" required>
+      <option value="">— выберите ноду —</option>
+      {% for n in nodes %}
+      <option value="{{ n.id }}"
+        data-country="{{ n.country or n.region }}"
+        data-ip="{{ n.public_ip or '' }}"
+        data-domain="{{ n.domain }}">
+        [{{ n.country or n.region }}] {{ n.public_ip or '?' }} — {{ n.name }}
+      </option>
+      {% endfor %}
+    </select>
+
+    <div class="checkbox-row">
+      <label><input type="checkbox" name="wifi" checked> Wi‑Fi — VLESS + TLS</label>
+      <label><input type="checkbox" name="mobile" checked> LTE — Hysteria2 + REALITY</label>
+    </div>
+    <p id="wait-hint" style="display:none;color:var(--warn)">Генерация 30–90 сек, не закрывайте страницу…</p>
+    <button type="submit" id="submit-btn" class="btn btn-blue btn-lg">Сгенерировать ссылки и QR</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0">Последние клиенты</h3>
+  <table>
+    <thead><tr><th>Имя</th><th>Страна</th><th>IP</th><th>Дата</th><th></th></tr></thead>
+    <tbody>
+    {% for u in users %}
+      <tr>
+        <td>{{ u.username }}</td>
+        <td>{{ u.exit_country or '—' }}</td>
+        <td>{{ u.exit_ip or '—' }}</td>
+        <td>{{ u.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+        <td><a href="/proxy/{{ u.id }}">Ссылки / QR</a></td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5" style="color:var(--muted)">Пока нет записей</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<script>
+const sel = document.getElementById('node-select');
+const countryLabel = document.getElementById('country-label');
+const ipLabel = document.getElementById('ip-label');
+function syncNode() {
+  const o = sel.selectedOptions[0];
+  if (!o || !o.value) {
+    countryLabel.textContent = '—';
+    ipLabel.textContent = '—';
+    return;
+  }
+  countryLabel.textContent = o.dataset.country || '—';
+  ipLabel.textContent = o.dataset.ip || 'после регистрации агента';
+}
+sel?.addEventListener('change', syncNode);
+if (sel && sel.options.length === 2) { sel.selectedIndex = 1; syncNode(); }
+else { syncNode(); }
+
+document.getElementById('proxy-form')?.addEventListener('submit', () => {
+  document.getElementById('wait-hint').style.display = 'block';
+  const btn = document.getElementById('submit-btn');
+  btn.disabled = true;
+  btn.textContent = 'Генерация…';
+});
+</script>
+{% endblock %}

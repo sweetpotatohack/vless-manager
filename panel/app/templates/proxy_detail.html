@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Клиент: {{ user.username }}</h2>
+<p style="color:var(--muted)">
+  Нода: {{ node.name }} · {{ node.domain }} ·
+  выход: <strong>{{ user.exit_country or node.country }}</strong>,
+  IP <strong>{{ user.exit_ip or node.public_ip }}</strong>
+</p>
+
+{% if user.hysteria_url %}
+<div class="card">
+  <h3 style="margin-top:0">★ LTE — Hysteria2 (основной)</h3>
+  <div class="url-box">{{ user.hysteria_url }}</div>
+  {% if qr_mobile %}
+  <div class="qr-row"><img src="/qr/{{ qr_mobile }}" alt="QR Hysteria / VLESS"></div>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if user.mobile_vless_url %}
+<div class="card">
+  <h3 style="margin-top:0">LTE запасной — VLESS REALITY :443</h3>
+  <div class="url-box">{{ user.mobile_vless_url }}</div>
+</div>
+{% endif %}
+
+{% if user.wifi_vless_url %}
+<div class="card">
+  <h3 style="margin-top:0">Wi‑Fi / дом — VLESS TLS{% if user.wifi_port %} :{{ user.wifi_port }}{% endif %}</h3>
+  <div class="url-box">{{ user.wifi_vless_url }}</div>
+  {% if qr_wifi %}
+  <div class="qr-row"><img src="/qr/{{ qr_wifi }}" alt="QR Wi-Fi"></div>
+  {% endif %}
+</div>
+{% endif %}
+
+<p><a href="/proxy" class="btn btn-cyan">← К списку</a></p>
+{% endblock %}
