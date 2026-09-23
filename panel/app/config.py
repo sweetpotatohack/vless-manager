@@ -32,3 +32,11 @@ BIND_HTTP_PORT = int(os.environ.get("VLESS_PANEL_HTTP_PORT", "8766"))
 BIND_PORT = BIND_HTTPS_PORT
 
 APP_TITLE = "VLESS Manager Pro — Control Panel"
+
+
+def panel_role() -> str:
+    return os.environ.get("VLESS_PANEL_ROLE", "master").strip().lower()
+
+
+def is_agent_panel() -> bool:
+    return panel_role() == "agent"

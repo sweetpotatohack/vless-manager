@@ -26,7 +26,9 @@ from app.config import (
     SESSION_COOKIE,
     SESSION_MAX_AGE,
     VLESS_CONFIG_DIR,
+    is_agent_panel,
 )
+from app.services.local_clients import list_local_vless_clients
 from app.database import Base, engine, get_db
 from app.deps import create_session_token, get_current_admin, get_optional_admin
 from app.migrate import run_migrations
@@ -472,6 +474,23 @@ def proxy_list(
     )
     flash_ok = request.query_params.get("msg")
     flash_err = request.query_params.get("err")
+    if is_agent_panel():
+        master = get_master_public_url(request)
+        return templates.TemplateResponse(
+            "proxy.html",
+            {
+                "request": request,
+                "title": APP_TITLE,
+                "admin": admin,
+                "nodes": [],
+                "users": [],
+                "error": flash_err,
+                "flash_ok": flash_ok,
+                "is_agent": True,
+                "master_proxy_url": f"{master.rstrip('/')}/proxy",
+                "local_clients": list_local_vless_clients(),
+            },
+        )
     return templates.TemplateResponse(
         "proxy.html",
         {
@@ -482,6 +501,8 @@ def proxy_list(
             "users": users,
             "error": flash_err,
             "flash_ok": flash_ok,
+            "is_agent": False,
+            "local_clients": [],
         },
     )
 
@@ -497,6 +518,23 @@ async def proxy_create(
     wifi: str | None = Form(None),
     mobile: str | None = Form(None),
 ):
+    if is_agent_panel():
+        master = get_master_public_url(request)
+        return templates.TemplateResponse(
+            "proxy.html",
+            {
+                "request": request,
+                "title": APP_TITLE,
+                "admin": admin,
+                "nodes": [],
+                "users": [],
+                "error": f"На agent-ноде клиентов не создают. Откройте master: {master}/proxy",
+                "is_agent": True,
+                "master_proxy_url": f"{master.rstrip('/')}/proxy",
+                "local_clients": list_local_vless_clients(),
+            },
+            status_code=400,
+        )
     node = db.get(Node, node_id)
     if not node or not node.is_active:
         raise HTTPException(400, "Нода недоступна — дождитесь online или выберите master")

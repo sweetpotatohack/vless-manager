@@ -2,6 +2,15 @@
 {% block content %}
 <h2>Proxy — выдача конфигов</h2>
 
+{% if is_agent %}
+<div class="alert alert-warn">
+  Это <strong>agent-нода</strong>. Полный каталог клиентов и выдача конфигов — только на
+  <a href="{{ master_proxy_url }}" target="_blank" rel="noopener">master-панели</a>.
+  Ниже — реальные Wi‑Fi inbound на этой машине (после создания на master).
+</div>
+{% endif %}
+
+{% if not is_agent %}
 <div class="card">
   <h3 style="margin-top:0">Новый пользователь</h3>
   {% if flash_ok %}
@@ -44,12 +53,24 @@
     <button type="submit" id="submit-btn" class="btn btn-blue btn-lg">Сгенерировать ссылки и QR</button>
   </form>
 </div>
+{% endif %}
 
 <div class="card">
-  <h3 style="margin-top:0">Последние клиенты</h3>
+  <h3 style="margin-top:0">{% if is_agent %}Клиенты на этой ноде (Xray){% else %}Последние клиенты{% endif %}</h3>
   <table>
-    <thead><tr><th>Имя</th><th>Страна</th><th>DNS / выход</th><th>Дата</th><th>Действия</th></tr></thead>
+    <thead><tr><th>Имя</th>{% if not is_agent %}<th>Страна</th><th>DNS / выход</th>{% else %}<th>Порт</th>{% endif %}<th>Дата</th>{% if not is_agent %}<th>Действия</th>{% endif %}</tr></thead>
     <tbody>
+    {% if is_agent %}
+    {% for c in local_clients %}
+      <tr>
+        <td>{{ c.name }}</td>
+        <td>{{ c.port or '—' }}</td>
+        <td>{{ c.created_at or '—' }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="3" style="color:var(--muted)">На диске нет clients.db или записей — создайте клиента на master для этой ноды</td></tr>
+    {% endfor %}
+    {% else %}
     {% for u in users %}
       <tr>
         <td>{{ u.username }}</td>
@@ -67,6 +88,7 @@
     {% else %}
       <tr><td colspan="5" style="color:var(--muted)">Пока нет записей</td></tr>
     {% endfor %}
+    {% endif %}
     </tbody>
   </table>
 </div>
