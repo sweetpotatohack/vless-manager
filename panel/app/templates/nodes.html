@@ -12,7 +12,7 @@
   <p>
     <a class="btn btn-amber" href="/nodes/{{ new_node.id }}/install.sh">Скачать install.sh</a>
   </p>
-  <p style="color:var(--muted);font-size:0.85rem">После установки нода станет <strong>online</strong> и появится в Proxy.</p>
+  <p style="color:var(--muted);font-size:0.85rem">После установки нода станет <strong>online</strong> и появится в Proxy. При сбое установки статус станет <strong>error</strong> — исправьте проблему и запустите команду снова.</p>
 </div>
 {% endif %}
 
@@ -63,6 +63,7 @@
         <td>{{ n.domain }}</td>
         <td>
           {% if n.agent_status == 'online' %}<span class="badge badge-ok">online</span>
+          {% elif n.agent_status == 'error' %}<span class="badge badge-bad">error</span>
           {% else %}<span class="badge badge-warn">{{ n.agent_status }}</span>{% endif %}
         </td>
         <td>{{ n.role }}</td>

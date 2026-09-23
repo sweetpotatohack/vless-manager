@@ -197,6 +197,7 @@ Master отправит на agent `POST /api/v1/provision`; конфиги и Q
 | Проблема | Решение |
 |----------|---------|
 | pending / offline | На agent: `systemctl status vless-panel`, `journalctl -u vless-panel -n 50` |
+| `TypeError: Union ... received a 'tuple'` при install | На agent стоит **Python 3.14** — обновите **master** (SQLAlchemy ≥ 2.0.41 в bundle) и повторите `curl … install.sh`; либо на agent: `/opt/vless-manager/panel/venv/bin/pip install -U 'sqlalchemy>=2.0.41'` и `bash panel/install_panel.sh` из bundle |
 | Master не создаёт конфиг | С master: `curl -H "Authorization: Bearer TOKEN" https://AGENT_IP:8765/api/v1/ports` |
 | Firewall | Открыть 8765 с master → agent; VPN-порты для клиентов |
 | Неверный `api_base` | В БД ноды должен быть URL agent API; перерегистрация через reinstall или правка в **Ноды** (если добавлено) / повтор install |

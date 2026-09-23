@@ -28,6 +28,18 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y python3-venv python3-pip rsync
 python3 -m venv "$VENV"
 "$VENV/bin/pip" install -q -U pip
 "$VENV/bin/pip" install -q -r "$INSTALL_DIR/requirements.txt"
+if "$VENV/bin/python" -c "import sys; sys.exit(0 if sys.version_info >= (3, 14) else 1)"; then
+  echo "Python 3.14+: upgrading SQLAlchemy (PEP 649 / Union compatibility)"
+  "$VENV/bin/pip" install -q -U "sqlalchemy>=2.0.54"
+fi
+
+PY_VER="$("$VENV/bin/python" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+echo "Python $PY_VER (panel venv)"
+PYTHONPATH="$INSTALL_DIR" "$VENV/bin/python" -c "from app.models import Node  # noqa: F401" \
+  || {
+  echo "Ошибка: ORM не загружается (часто Python 3.14 + старый SQLAlchemy). Обновите bundle на master и повторите." >&2
+  exit 1
+}
 
 if [[ -n "${VLESS_PANEL_AGENT_TOKEN:-}" ]]; then
   cat > "$DATA/agent.env" << EOF

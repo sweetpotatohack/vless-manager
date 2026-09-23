@@ -867,6 +867,22 @@ async def api_nodes_register(request: Request, db: Session = Depends(get_db)):
     return {"ok": True, "node_id": node.id, "name": node.name}
 
 
+@app.post("/api/v1/nodes/install-failed")
+async def api_nodes_install_failed(request: Request, db: Session = Depends(get_db)):
+    body = await request.json()
+    token = (body.get("token") or "").strip()
+    node = _node_by_agent_token(db, token)
+    if not node:
+        raise HTTPException(404, "Unknown token")
+    if node.agent_status == "online":
+        return {"ok": True, "ignored": True, "reason": "already online"}
+    node.agent_status = "error"
+    node.is_active = False
+    node.last_seen = datetime.utcnow()
+    db.commit()
+    return {"ok": True, "node_id": node.id, "agent_status": node.agent_status}
+
+
 @app.post("/api/v1/delete")
 async def api_delete(
     request: Request,

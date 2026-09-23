@@ -15,6 +15,19 @@ MASTER="{master_url}"
 NODE_TOKEN="{node_token}"
 NODE_NAME="{node_name}"
 
+_vless_report_install_failed() {{
+  local ec=$?
+  if [[ $ec -eq 0 ]]; then
+    return 0
+  fi
+  curl -fsS --max-time 20 -X POST "$MASTER/api/v1/nodes/install-failed" \\
+    -H "Content-Type: application/json" \\
+    -d "{{\\"token\\":\\"$NODE_TOKEN\\",\\"code\\":$ec}}" \\
+    2>/dev/null || true
+  return "$ec"
+}}
+trap _vless_report_install_failed EXIT
+
 echo "=== VLESS Agent: $NODE_NAME -> $MASTER ==="
 
 export DEBIAN_FRONTEND=noninteractive
