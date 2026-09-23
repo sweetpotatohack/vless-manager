@@ -30,7 +30,15 @@ from app.config import (
 from app.database import Base, engine, get_db
 from app.deps import create_session_token, get_current_admin, get_optional_admin
 from app.migrate import run_migrations
-from app.models import AdminUser, Node, ProxyUser
+from app.models import AdminUser, AgentJob, Node, ProxyUser
+from app.services.agent_queue import (
+    create_delete_job,
+    create_provision_job,
+    reclaim_stale_jobs,
+    remote_uses_job_queue,
+    wait_for_job,
+)
+from app.services.agent_worker import start_agent_job_worker
 from app.services.agent_script import render_agent_install_script
 from app.services.autorenew_task import cert_autorenew_worker
 from app.services.cert_actions import (
@@ -43,6 +51,7 @@ from app.services.settings import get_settings
 from app.services.master_url import get_master_public_url
 from app.services.ports import port_status
 from app.services.provision import (
+    ProvisionResult,
     delete_local_client,
     delete_remote_client,
     provision_local,
@@ -119,6 +128,7 @@ async def on_startup():
         db.close()
     reconcile_wifi_servers()
     asyncio.create_task(cert_autorenew_worker())
+    start_agent_job_worker()
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -241,6 +251,16 @@ def dashboard(
 
 def _node_by_agent_token(db: Session, token: str) -> Node | None:
     return db.query(Node).filter(Node.api_token == token).first()
+
+
+def _agent_node_from_request(request: Request, db: Session) -> Node | None:
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+    token = auth.removeprefix("Bearer ").strip()
+    if not token:
+        return None
+    return _node_by_agent_token(db, token)
 
 
 @app.get("/nodes", response_class=HTMLResponse)
@@ -484,15 +504,43 @@ async def proxy_create(
             mobile=do_mobile,
         )
     else:
-        if not api_base or not node.api_token:
+        if not node.api_token:
             raise HTTPException(400, "Нода ещё не зарегистрирована агентом")
-        result = await provision_remote(
-            api_base,
-            node.api_token,
-            uname,
-            wifi=do_wifi,
-            mobile=do_mobile,
-        )
+        if remote_uses_job_queue(node):
+            job = create_provision_job(
+                db,
+                node_id=node.id,
+                username=uname,
+                wifi=do_wifi,
+                mobile=do_mobile,
+            )
+            try:
+                job = await wait_for_job(job.id)
+            except TimeoutError as e:
+                result = ProvisionResult(False, str(e))
+            else:
+                if job.status == "failed":
+                    result = ProvisionResult(False, job.error_message or "Ошибка на agent")
+                else:
+                    result = ProvisionResult(
+                        ok=True,
+                        message="OK",
+                        wifi_vless_url=job.wifi_vless_url,
+                        mobile_vless_url=job.mobile_vless_url,
+                        hysteria_url=job.hysteria_url,
+                        wifi_port=job.wifi_port,
+                        uuid=job.uuid,
+                    )
+        else:
+            if not api_base:
+                raise HTTPException(400, "Нода ещё не зарегистрирована агентом")
+            result = await provision_remote(
+                api_base,
+                node.api_token,
+                uname,
+                wifi=do_wifi,
+                mobile=do_mobile,
+            )
 
     if not result.ok:
         nodes = db.query(Node).filter(Node.is_active.is_(True)).all()
@@ -581,15 +629,35 @@ async def proxy_delete(
             mobile=pu.has_mobile,
         )
     else:
-        if not node.api_base or not node.api_token:
+        if not node.api_token:
             raise HTTPException(400, "Удалённая нода недоступна")
-        result = await delete_remote_client(
-            node.api_base,
-            node.api_token,
-            pu.username,
-            wifi=pu.has_wifi,
-            mobile=pu.has_mobile,
-        )
+        if remote_uses_job_queue(node):
+            job = create_delete_job(
+                db,
+                node_id=node.id,
+                username=pu.username,
+                wifi=pu.has_wifi,
+                mobile=pu.has_mobile,
+            )
+            try:
+                job = await wait_for_job(job.id)
+            except TimeoutError as e:
+                result = ProvisionResult(False, str(e))
+            else:
+                if job.status == "failed":
+                    result = ProvisionResult(False, job.error_message or "Ошибка на agent")
+                else:
+                    result = ProvisionResult(True, "Конфиг удалён на удалённой ноде")
+        else:
+            if not node.api_base:
+                raise HTTPException(400, "Удалённая нода недоступна")
+            result = await delete_remote_client(
+                node.api_base,
+                node.api_token,
+                pu.username,
+                wifi=pu.has_wifi,
+                mobile=pu.has_mobile,
+            )
 
     if not result.ok:
         return RedirectResponse(
@@ -867,6 +935,62 @@ def _bundle_paths() -> list[tuple[str, Path]]:
     if vss.is_file():
         items.append(("vless-servers-script.sh", vss))
     return items
+
+
+@app.get("/api/v1/agent/next-job")
+def api_agent_next_job(request: Request, db: Session = Depends(get_db)):
+    node = _agent_node_from_request(request, db)
+    if not node:
+        raise HTTPException(403, "Invalid agent token")
+    reclaim_stale_jobs(db)
+    job = (
+        db.query(AgentJob)
+        .filter(AgentJob.node_id == node.id, AgentJob.status == "pending")
+        .order_by(AgentJob.id.asc())
+        .first()
+    )
+    if not job:
+        return Response(status_code=204)
+    job.status = "processing"
+    job.updated_at = datetime.utcnow()
+    node.last_seen = datetime.utcnow()
+    if node.agent_status != "online":
+        node.agent_status = "online"
+    db.commit()
+    return {
+        "id": job.id,
+        "job_type": job.job_type,
+        "username": job.username,
+        "has_wifi": job.has_wifi,
+        "has_mobile": job.has_mobile,
+    }
+
+
+@app.post("/api/v1/agent/job-result")
+async def api_agent_job_result(request: Request, db: Session = Depends(get_db)):
+    node = _agent_node_from_request(request, db)
+    if not node:
+        raise HTTPException(403, "Invalid agent token")
+    body = await request.json()
+    job_id = body.get("job_id")
+    job = db.get(AgentJob, job_id)
+    if not job or job.node_id != node.id:
+        raise HTTPException(404, "Job not found")
+    if body.get("ok"):
+        job.status = "done"
+        job.error_message = None
+        job.wifi_vless_url = body.get("wifi_vless_url")
+        job.mobile_vless_url = body.get("mobile_vless_url")
+        job.hysteria_url = body.get("hysteria_url")
+        job.wifi_port = body.get("wifi_port")
+        job.uuid = body.get("uuid")
+    else:
+        job.status = "failed"
+        job.error_message = (body.get("error_message") or "failed")[:4000]
+    job.updated_at = datetime.utcnow()
+    node.last_seen = datetime.utcnow()
+    db.commit()
+    return {"ok": True}
 
 
 @app.get("/api/v1/agent/admin-sync")

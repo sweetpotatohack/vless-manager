@@ -83,3 +83,27 @@ class ProxyUser(Base):
     )
 
     node: Mapped["Node"] = relationship(back_populates="proxy_users")
+
+
+class AgentJob(Base):
+    """Задачи для remote-нод (agent забирает с master — работает за NAT)."""
+
+    __tablename__ = "agent_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    node_id: Mapped[int] = mapped_column(ForeignKey("nodes.id"), index=True)
+    job_type: Mapped[str] = mapped_column(String(16), default="provision")
+    username: Mapped[str] = mapped_column(String(64))
+    has_wifi: Mapped[bool] = mapped_column(Boolean, default=True)
+    has_mobile: Mapped[bool] = mapped_column(Boolean, default=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    wifi_vless_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mobile_vless_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    hysteria_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    wifi_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    uuid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, default=lambda: dt.datetime.utcnow()
+    )
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)

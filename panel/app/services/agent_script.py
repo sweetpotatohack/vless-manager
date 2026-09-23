@@ -63,24 +63,22 @@ DOMAIN="$(hostname -f 2>/dev/null || echo "$PUBLIC_IP")"
 
 MASTER_HOST="${{MASTER#https://}}"; MASTER_HOST="${{MASTER_HOST#http://}}"; MASTER_HOST="${{MASTER_HOST%%:*}}"
 MASTER_IP="$(getent ahostsv4 "$MASTER_HOST" 2>/dev/null | awk '{{print $1; exit}}' || true)"
-API_HOST="${{VLESS_AGENT_API_HOST:-}}"
-if [[ -z "$API_HOST" ]]; then
-  if [[ -n "$MASTER_IP" && "$PUBLIC_IP" == "$MASTER_IP" && -n "$LOCAL_IP" && "$LOCAL_IP" != "$MASTER_IP" ]]; then
-    API_HOST="$LOCAL_IP"
-  else
-    API_HOST="${{PUBLIC_IP:-$LOCAL_IP}}"
-  fi
+REPORT_IP="$PUBLIC_IP"
+if [[ -n "$MASTER_IP" && "$PUBLIC_IP" == "$MASTER_IP" && -n "$LOCAL_IP" ]]; then
+  REPORT_IP="$LOCAL_IP"
 fi
+API_HOST="${{VLESS_AGENT_API_HOST:-${{PUBLIC_IP:-$LOCAL_IP}}}}"
 API_BASE="http://${{API_HOST}}:8765"
 
 echo "Регистрация на master..."
 curl -fsSL -X POST "$MASTER/api/v1/nodes/register" \\
   -H "Content-Type: application/json" \\
-  -d "{{\\"token\\":\\"$NODE_TOKEN\\",\\"public_ip\\":\\"$PUBLIC_IP\\",\\"domain\\":\\"$DOMAIN\\",\\"api_base\\":\\"$API_BASE\\",\\"country\\":\\"\\"}}"
+  -d "{{\\"token\\":\\"$NODE_TOKEN\\",\\"public_ip\\":\\"$REPORT_IP\\",\\"domain\\":\\"$DOMAIN\\",\\"api_base\\":\\"$API_BASE\\",\\"country\\":\\"\\"}}"
 
 echo ""
 echo "=== Службы (autostart) ==="
 systemctl enable vless-panel.service vless-agent.service 2>/dev/null || systemctl enable vless-panel.service
 systemctl is-active vless-panel.service && echo "vless-panel: active"
-echo "API: $API_BASE/api/v1/health"
+echo "API (справочно): $API_BASE/api/v1/health"
+echo "Provision: agent опрашивает master (HTTPS), прямой доступ master→agent не обязателен"
 """
