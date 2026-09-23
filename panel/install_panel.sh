@@ -79,7 +79,7 @@ Environment=VLESS_PANEL_INSTALL_DIR=$INSTALL_DIR
 Environment=VLESS_PANEL_VENV=$VENV
 Environment=VLESS_TLS_ENV=/etc/vless-manager/tls.env
 Environment=VLESS_MANAGER_SH=/opt/vless-manager/vless_manager.sh
-ExecStart=$INSTALL_DIR/run_panel_dual.sh
+ExecStart=/bin/bash $INSTALL_DIR/run_panel_dual.sh
 Restart=on-failure
 RestartSec=3
 KillMode=control-group
