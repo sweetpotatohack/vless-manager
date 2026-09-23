@@ -19,8 +19,16 @@ rsync -a --delete \
 chmod +x "$INSTALL_DIR/run_panel_dual.sh"
 
 mkdir -p /opt/vless-manager
-cp -f "$REPO_ROOT/vless_manager.sh" /opt/vless-manager/vless_manager.sh
-chmod +x /opt/vless-manager/vless_manager.sh
+_mgr_src="$REPO_ROOT/vless_manager.sh"
+_mgr_dst="/opt/vless-manager/vless_manager.sh"
+if [[ -f "$_mgr_src" ]]; then
+  _src_r="$(readlink -f "$_mgr_src" 2>/dev/null || echo "$_mgr_src")"
+  _dst_r="$(readlink -f "$_mgr_dst" 2>/dev/null || echo "")"
+  if [[ "$_src_r" != "$_dst_r" ]]; then
+    cp -f "$_mgr_src" "$_mgr_dst"
+  fi
+  chmod +x "$_mgr_dst"
+fi
 
 apt-get update -qq >/dev/null 2>&1 || true
 DEBIAN_FRONTEND=noninteractive apt-get install -y python3-venv python3-pip rsync >/dev/null 2>&1 || true

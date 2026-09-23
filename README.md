@@ -314,13 +314,29 @@ sudo ./panel/install_panel.sh
 
 ## Обновление
 
+**`/opt/vless-manager` обычно не git-репозиторий** — `git pull` там не сработает. Используйте скрипт (клонирует свежий код во `/tmp` и ставит в `/opt`):
+
+```bash
+sudo cp -a /etc/vless-manager /etc/vless-manager.backup.$(date +%F)
+curl -fsSL https://raw.githubusercontent.com/sweetpotatohack/vless-manager/main/scripts/update_from_github.sh -o /tmp/vless-update.sh
+sudo bash /tmp/vless-update.sh
+```
+
+Либо с уже скачанным репозиторием:
+
+```bash
+git clone --depth 1 https://github.com/sweetpotatohack/vless-manager.git /tmp/vless-manager-upd
+sudo bash /tmp/vless-manager-upd/scripts/update_from_github.sh
+```
+
+**Не запускайте** `panel/install_panel.sh` напрямую из `/opt/vless-manager/panel/` — он считает «репо» = `/opt` и не подтянет новый код с GitHub (и раньше падал на `cp` в тот же файл).
+
+Если разрабатываете в git-клоне на сервере:
+
 ```bash
 sudo cp -a /etc/vless-manager /etc/vless-manager.backup.$(date +%F)
 cd /path/to/vless-manager && git pull
-sudo rsync -a panel/ /opt/vless-manager/panel/ --exclude venv
-sudo cp vless_manager.sh vless-servers-script.sh /opt/vless-manager/
-sudo cp vless-servers-script.sh /usr/local/bin/vless-servers
-sudo ./panel/install_panel.sh   # или только restart vless-panel
+sudo bash panel/install_panel.sh
 sudo systemctl restart vless-xray vless-panel
 ```
 
