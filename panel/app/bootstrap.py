@@ -81,6 +81,9 @@ def ensure_local_node(db: Session) -> Node:
         if not node.country or node.country == "Master (local)":
             node.country = _default_local_country()
             changed = True
+        if node.country and (not node.region or node.region == "local"):
+            node.region = node.country
+            changed = True
         if not node.agent_status:
             node.agent_status = "online"
             changed = True

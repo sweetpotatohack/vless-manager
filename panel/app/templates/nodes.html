@@ -77,7 +77,7 @@
     {% for n in nodes %}
       <tr>
         <td>{{ n.name }}</td>
-        <td>{{ n.country or n.region }}</td>
+        <td>{{ node_region_display(n) }}</td>
         <td>{{ n.public_ip or '—' }}</td>
         <td>
           {% if n.role == 'remote' %}
@@ -93,7 +93,7 @@
           {% elif n.agent_status == 'error' %}<span class="badge badge-bad">error</span>
           {% else %}<span class="badge badge-warn">{{ n.agent_status }}</span>{% endif %}
         </td>
-        <td>{{ n.role }}</td>
+        <td>{{ node_role_display(n) }}</td>
         <td class="form-actions" style="margin:0">
           {% if n.api_token and n.role == 'remote' %}
           <a class="btn btn-amber" style="padding:0.35rem 0.65rem;font-size:0.62rem" href="/nodes/{{ n.id }}/install.sh">install.sh</a>

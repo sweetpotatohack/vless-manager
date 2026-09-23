@@ -57,7 +57,7 @@ from app.services.certs import all_cert_status
 from app.services.settings import get_settings
 from app.services.master_sync import master_unregister_proxy_user
 from app.services.master_url import get_master_public_url
-from app.services.nodes_helpers import node_vpn_host
+from app.services.nodes_helpers import node_region_display, node_role_display, node_vpn_host
 from app.services.ports import port_status
 from app.services.provision import (
     ProvisionResult,
@@ -86,6 +86,8 @@ REPO_ROOT = REPO_PANEL.parent
 templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
 templates.env.autoescape = True
 templates.env.globals["node_vpn_host"] = node_vpn_host
+templates.env.globals["node_region_display"] = node_region_display
+templates.env.globals["node_role_display"] = node_role_display
 
 app = FastAPI(title=APP_TITLE)
 app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
@@ -334,6 +336,7 @@ def nodes_set_local_country(
     node = db.query(Node).filter(Node.role == "local").first()
     if node and country:
         node.country = country
+        node.region = country
         db.commit()
     return RedirectResponse("/nodes", status_code=303)
 

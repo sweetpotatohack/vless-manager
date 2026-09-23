@@ -25,14 +25,14 @@
 <div class="card">
   <h3 style="margin-top:0">Ноды</h3>
   <table>
-    <thead><tr><th>Имя</th><th>Домен</th><th>Регион</th><th>Роль</th></tr></thead>
+    <thead><tr><th>Имя</th><th>Домен</th><th>Страна</th><th>Роль</th></tr></thead>
     <tbody>
     {% for n in nodes %}
       <tr>
         <td>{{ n.name }}</td>
         <td>{{ n.domain }}</td>
-        <td>{{ n.region }}</td>
-        <td>{{ n.role }}</td>
+        <td>{{ node_region_display(n) }}</td>
+        <td>{{ node_role_display(n) }}</td>
       </tr>
     {% endfor %}
     </tbody>
