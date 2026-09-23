@@ -265,6 +265,8 @@ def nodes_page(
         install_cmd = (
             f"curl -fsSL '{master_url}/api/v1/agent/install.sh?token={new_node.api_token}' | bash"
         )
+    flash_ok = request.query_params.get("msg")
+    flash_err = request.query_params.get("err")
     return templates.TemplateResponse(
         "nodes.html",
         {
@@ -276,6 +278,8 @@ def nodes_page(
             "new_node": new_node,
             "install_cmd": install_cmd,
             "local_country": local_country,
+            "flash_ok": flash_ok,
+            "flash_err": flash_err,
         },
     )
 
@@ -328,6 +332,44 @@ def nodes_generate_agent(
     db.commit()
     db.refresh(node)
     return RedirectResponse(f"/nodes?created={node.id}", status_code=303)
+
+
+@app.post("/nodes/{node_id}/delete")
+async def nodes_delete(
+    node_id: int,
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+    _: None = Depends(require_form_csrf),
+):
+    node = db.get(Node, node_id)
+    if not node:
+        raise HTTPException(404)
+    if node.role == "local":
+        return RedirectResponse(
+            "/nodes?err=" + quote("Нельзя удалить master-ноду"),
+            status_code=303,
+        )
+    name = node.name
+    remote_fail: list[str] = []
+    users = db.query(ProxyUser).filter(ProxyUser.node_id == node_id).all()
+    for pu in users:
+        if node.api_base and node.api_token:
+            result = await delete_remote_client(
+                node.api_base,
+                node.api_token,
+                pu.username,
+                wifi=pu.has_wifi,
+                mobile=pu.has_mobile,
+            )
+            if not result.ok:
+                remote_fail.append(pu.username)
+        db.delete(pu)
+    db.delete(node)
+    db.commit()
+    msg = f"Нода «{name}» удалена из панели"
+    if remote_fail:
+        msg += f" (на agent не сняты: {', '.join(remote_fail[:5])})"
+    return RedirectResponse("/nodes?msg=" + quote(msg), status_code=303)
 
 
 @app.get("/nodes/{node_id}/install.sh")

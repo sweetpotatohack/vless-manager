@@ -56,9 +56,22 @@ else
   bash panel/install_panel.sh
 fi
 
-PUBLIC_IP="$(curl -4 -fsS --max-time 10 https://api.ipify.org 2>/dev/null || curl -4 -fsS --max-time 10 https://ifconfig.me/ip 2>/dev/null || hostname -I | awk '{{print $1}}')"
+LOCAL_IP="$(hostname -I 2>/dev/null | awk '{{for(i=1;i<=NF;i++) if($i!~/^127\\./) {{print $i; exit}}}}')"
+PUBLIC_IP="$(curl -4 -fsS --max-time 10 https://api.ipify.org 2>/dev/null || curl -4 -fsS --max-time 10 https://ifconfig.me/ip 2>/dev/null || true)"
+PUBLIC_IP="${{VLESS_AGENT_PUBLIC_IP:-${{PUBLIC_IP:-$LOCAL_IP}}}}"
 DOMAIN="$(hostname -f 2>/dev/null || echo "$PUBLIC_IP")"
-API_BASE="http://${{PUBLIC_IP}}:8765"
+
+MASTER_HOST="${{MASTER#https://}}"; MASTER_HOST="${{MASTER_HOST#http://}}"; MASTER_HOST="${{MASTER_HOST%%:*}}"
+MASTER_IP="$(getent ahostsv4 "$MASTER_HOST" 2>/dev/null | awk '{{print $1; exit}}' || true)"
+API_HOST="${{VLESS_AGENT_API_HOST:-}}"
+if [[ -z "$API_HOST" ]]; then
+  if [[ -n "$MASTER_IP" && "$PUBLIC_IP" == "$MASTER_IP" && -n "$LOCAL_IP" && "$LOCAL_IP" != "$MASTER_IP" ]]; then
+    API_HOST="$LOCAL_IP"
+  else
+    API_HOST="${{PUBLIC_IP:-$LOCAL_IP}}"
+  fi
+fi
+API_BASE="http://${{API_HOST}}:8765"
 
 echo "Регистрация на master..."
 curl -fsSL -X POST "$MASTER/api/v1/nodes/register" \\

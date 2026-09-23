@@ -2,6 +2,8 @@
 {% block content %}
 <h2>Ноды</h2>
 <p style="color:var(--muted)">Master: <code>{{ master_url }}</code></p>
+{% if flash_ok %}<div class="alert alert-ok">{{ flash_ok }}</div>{% endif %}
+{% if flash_err %}<div class="alert alert-error">{{ flash_err }}</div>{% endif %}
 
 {% if new_node and install_cmd %}
 <div class="card alert alert-ok">
@@ -51,7 +53,7 @@
         <th>Домен</th>
         <th>Статус</th>
         <th>Роль</th>
-        <th></th>
+        <th>Действия</th>
       </tr>
     </thead>
     <tbody>
@@ -67,9 +69,13 @@
           {% else %}<span class="badge badge-warn">{{ n.agent_status }}</span>{% endif %}
         </td>
         <td>{{ n.role }}</td>
-        <td>
+        <td class="form-actions" style="margin:0">
           {% if n.api_token and n.role == 'remote' %}
-          <a href="/nodes/{{ n.id }}/install.sh">install.sh</a>
+          <a class="btn btn-amber" style="padding:0.35rem 0.65rem;font-size:0.62rem" href="/nodes/{{ n.id }}/install.sh">install.sh</a>
+          <form method="post" action="/nodes/{{ n.id }}/delete" style="display:inline" onsubmit="return confirm('Удалить ноду «{{ n.name }}» и все её записи в Proxy?');">
+            {% include "csrf_input.html" %}
+            <button type="submit" class="btn btn-red" style="padding:0.35rem 0.65rem;font-size:0.62rem">Удалить</button>
+          </form>
           {% else %}—{% endif %}
         </td>
       </tr>
