@@ -79,7 +79,15 @@
         <td>{{ n.name }}</td>
         <td>{{ n.country or n.region }}</td>
         <td>{{ n.public_ip or '—' }}</td>
-        <td>{{ n.domain }}</td>
+        <td>
+          {% if n.role == 'remote' %}
+          <form method="post" action="/nodes/{{ n.id }}/domain" class="form-inline" style="display:flex;gap:0.35rem;align-items:center;flex-wrap:wrap">
+            {% include "csrf_input.html" %}
+            <input type="text" name="domain" value="{{ n.domain }}" required style="min-width:10rem;max-width:14rem;padding:0.35rem 0.5rem;font-size:0.8rem">
+            <button type="submit" class="btn btn-blue" style="padding:0.3rem 0.55rem;font-size:0.62rem">DNS</button>
+          </form>
+          {% else %}{{ n.domain }}{% endif %}
+        </td>
         <td>
           {% if n.agent_status == 'online' %}<span class="badge badge-ok">online</span>
           {% elif n.agent_status == 'error' %}<span class="badge badge-bad">error</span>

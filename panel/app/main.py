@@ -362,6 +362,28 @@ def nodes_generate_agent(
     return RedirectResponse(f"/nodes?created={node.id}", status_code=303)
 
 
+@app.post("/nodes/{node_id}/domain")
+def nodes_set_domain(
+    node_id: int,
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+    _: None = Depends(require_form_csrf),
+    domain: str = Form(...),
+):
+    node = db.get(Node, node_id)
+    if not node or node.role != "remote":
+        return RedirectResponse("/nodes?err=" + quote("Нода не найдена"), status_code=303)
+    domain = domain.strip().lower()
+    if not domain or domain.endswith(".local"):
+        return RedirectResponse(
+            "/nodes?err=" + quote("Некорректный DNS домен"),
+            status_code=303,
+        )
+    node.domain = domain
+    db.commit()
+    return RedirectResponse("/nodes?msg=" + quote(f"DNS ноды «{node.name}»: {domain}"), status_code=303)
+
+
 @app.post("/nodes/{node_id}/delete")
 async def nodes_delete(
     node_id: int,
