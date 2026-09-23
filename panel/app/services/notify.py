@@ -19,7 +19,7 @@ async def send_telegram(token: str, chat_id: str, text: str) -> bool:
         return False
 
 
-def send_email_simple(to_addr: str, subject: str, body: str) -> bool:
+def send_email_local(to_addr: str, subject: str, body: str) -> bool:
     if not to_addr:
         return False
     msg = EmailMessage()
@@ -44,6 +44,63 @@ def send_email_simple(to_addr: str, subject: str, body: str) -> bool:
             return False
 
 
+def send_email_smtp(
+    *,
+    host: str,
+    port: int,
+    user: str,
+    password: str,
+    security: str,
+    from_addr: str,
+    to_addr: str,
+    subject: str,
+    body: str,
+) -> bool:
+    if not host or not to_addr:
+        return False
+    port = port or (465 if security == "ssl" else 587)
+    from_hdr = (from_addr or user or f"noreply@{host.split('@')[-1]}").strip()
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = from_hdr
+    msg["To"] = to_addr
+    msg.set_content(body)
+    sec = (security or "starttls").lower()
+    try:
+        if sec == "ssl":
+            with smtplib.SMTP_SSL(host, port, timeout=30) as smtp:
+                if user:
+                    smtp.login(user, password)
+                smtp.send_message(msg)
+        else:
+            with smtplib.SMTP(host, port, timeout=30) as smtp:
+                if sec == "starttls":
+                    smtp.starttls()
+                if user:
+                    smtp.login(user, password)
+                smtp.send_message(msg)
+        return True
+    except (OSError, smtplib.SMTPException):
+        return False
+
+
+def send_email_for_settings(db_settings, to_addr: str, subject: str, body: str) -> bool:
+    host = (getattr(db_settings, "smtp_host", None) or "").strip()
+    if host:
+        return send_email_smtp(
+            host=host,
+            port=int(getattr(db_settings, "smtp_port", None) or 587),
+            user=(getattr(db_settings, "smtp_user", None) or "").strip(),
+            password=getattr(db_settings, "smtp_password", None) or "",
+            security=(getattr(db_settings, "smtp_security", None) or "starttls").strip(),
+            from_addr=(getattr(db_settings, "smtp_from_email", None) or "").strip(),
+            to_addr=to_addr,
+            subject=subject,
+            body=body,
+        )
+    return send_email_local(to_addr, subject, body)
+
+
 async def notify_admin(db_settings, subject: str, body: str) -> None:
     if not db_settings.notify_on_cert:
         return
@@ -54,4 +111,4 @@ async def notify_admin(db_settings, subject: str, body: str) -> None:
             f"{subject}\n\n{body}",
         )
     if db_settings.notify_email:
-        send_email_simple(db_settings.notify_email, subject, body)
+        send_email_for_settings(db_settings, db_settings.notify_email, subject, body)

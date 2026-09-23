@@ -29,6 +29,12 @@ class PanelSettings(Base):
     telegram_chat_id: Mapped[str] = mapped_column(String(64), default="")
     notify_email: Mapped[str] = mapped_column(String(256), default="")
     notify_on_cert: Mapped[bool] = mapped_column(Boolean, default=True)
+    smtp_host: Mapped[str] = mapped_column(String(255), default="")
+    smtp_port: Mapped[int] = mapped_column(Integer, default=587)
+    smtp_user: Mapped[str] = mapped_column(String(255), default="")
+    smtp_password: Mapped[str] = mapped_column(String(512), default="")
+    smtp_security: Mapped[str] = mapped_column(String(16), default="starttls")
+    smtp_from_email: Mapped[str] = mapped_column(String(256), default="")
 
 
 class Node(Base):

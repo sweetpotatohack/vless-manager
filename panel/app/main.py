@@ -120,7 +120,7 @@ def login_submit(
         httponly=True,
         samesite="lax",
         max_age=SESSION_MAX_AGE,
-        secure=False,
+        secure=(request.url.scheme == "https"),
     )
     return resp
 
@@ -626,12 +626,26 @@ def profile_notifications(
     telegram_chat_id: str = Form(""),
     notify_email: str = Form(""),
     notify_on_cert: str | None = Form(None),
+    smtp_host: str = Form(""),
+    smtp_port: int = Form(587),
+    smtp_user: str = Form(""),
+    smtp_password: str = Form(""),
+    smtp_security: str = Form("starttls"),
+    smtp_from_email: str = Form(""),
 ):
     settings = get_settings(db)
     settings.telegram_bot_token = telegram_bot_token.strip()
     settings.telegram_chat_id = telegram_chat_id.strip()
     settings.notify_email = notify_email.strip()
     settings.notify_on_cert = notify_on_cert == "on"
+    settings.smtp_host = smtp_host.strip()
+    settings.smtp_port = max(1, min(65535, int(smtp_port or 587)))
+    settings.smtp_user = smtp_user.strip()
+    if smtp_password.strip():
+        settings.smtp_password = smtp_password.strip()
+    sec = smtp_security.strip().lower()
+    settings.smtp_security = sec if sec in ("none", "starttls", "ssl") else "starttls"
+    settings.smtp_from_email = smtp_from_email.strip()
     db.commit()
     return RedirectResponse("/profile?msg=Оповещения сохранены", status_code=303)
 

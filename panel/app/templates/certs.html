@@ -2,6 +2,11 @@
 {% block content %}
 <h2 class="page-title"><span class="title-accent">//</span> Сертификаты</h2>
 <p class="muted">Состояние на {{ data.checked_at.strftime('%Y-%m-%d %H:%M UTC') }}</p>
+<div class="alert alert-warn animate-in">
+  <strong>Панель:</strong> основной вход — <code>https://{{ tls.public_host or 'ваш-домен' }}:8765</code> (LE из tls.env).
+  Аварийный HTTP без TLS — <code>http://…:8766</code>, если сертификаты недоступны.
+  LE ниже также используется для VPN (VLESS / Hysteria2).
+</div>
 
 {% if flash_ok %}
 <div class="alert alert-ok animate-in">{{ flash_ok }}</div>
@@ -47,6 +52,16 @@
   <p class="muted small">При срабатывании: <code>certbot renew</code> + копия в Hysteria. Оповещения — в «Кабинет».</p>
 </div>
 
+{% if data.active_vpn %}
+<div class="card card-glow">
+  <h3 class="card-title">Активный для VPN (tls.env)</h3>
+  <p>Домен: <strong>{{ data.active_vpn.name }}</strong>
+    · файл <code>{{ data.active_vpn.cert_path }}</code></p>
+  <p>Истекает: {% if data.active_vpn.expiry %}{{ data.active_vpn.expiry.strftime('%Y-%m-%d %H:%M UTC') }}{% else %}—{% endif %}
+    · дней: <strong>{{ data.active_vpn.days_left if data.active_vpn.days_left is not none else '—' }}</strong></p>
+</div>
+{% endif %}
+
 <div class="card">
   <h3 class="card-title">Certbot timer</h3>
   <p>Активен: <strong>{{ data.timer.active or '—' }}</strong>
@@ -59,8 +74,8 @@
     <thead><tr><th>Имя</th><th>Домены</th><th>Истекает</th><th>Дней</th><th>Статус</th></tr></thead>
     <tbody>
     {% for c in data.certificates %}
-      <tr>
-        <td><code>{{ c.name }}</code></td>
+      <tr{% if data.active_vpn and c.name == data.active_vpn.name %} class="row-active"{% endif %}>
+        <td><code>{{ c.name }}</code>{% if data.active_vpn and c.name == data.active_vpn.name %} <span class="badge badge-ok">VPN</span>{% endif %}</td>
         <td>{{ c.domains|join(', ') }}</td>
         <td>{% if c.expiry %}{{ c.expiry.strftime('%Y-%m-%d %H:%M') }}{% else %}—{% endif %}</td>
         <td>{{ c.days_left if c.days_left is not none else '—' }}</td>
@@ -80,9 +95,14 @@
 
 {% if data.hysteria %}
 <div class="card">
-  <h3 class="card-title">Hysteria2 copy</h3>
+  <h3 class="card-title">{{ data.hysteria.name }}</h3>
+  <p>Домен: <strong>{{ data.hysteria.domains|join(', ') }}</strong></p>
   <p><code>{{ data.hysteria.cert_path }}</code></p>
-  <p>Дней: {{ data.hysteria.days_left if data.hysteria.days_left is not none else '—' }}</p>
+  <p>Истекает: {% if data.hysteria.expiry %}{{ data.hysteria.expiry.strftime('%Y-%m-%d %H:%M UTC') }}{% else %}—{% endif %}
+    · дней: <strong>{{ data.hysteria.days_left if data.hysteria.days_left is not none else '—' }}</strong></p>
+  {% if data.active_vpn and data.hysteria.days_left is not none and data.active_vpn.days_left is not none and data.hysteria.days_left != data.active_vpn.days_left %}
+  <p class="hint">Срок отличается от tls.env — нажмите «Синхронизировать Hysteria».</p>
+  {% endif %}
 </div>
 {% endif %}
 {% endblock %}

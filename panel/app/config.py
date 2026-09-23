@@ -27,6 +27,8 @@ SESSION_COOKIE = "vless_panel_session"
 SESSION_MAX_AGE = 60 * 60 * 12
 
 BIND_HOST = os.environ.get("VLESS_PANEL_HOST", "127.0.0.1")
-BIND_PORT = int(os.environ.get("VLESS_PANEL_PORT", "8765"))
+BIND_HTTPS_PORT = int(os.environ.get("VLESS_PANEL_HTTPS_PORT", "8765"))
+BIND_HTTP_PORT = int(os.environ.get("VLESS_PANEL_HTTP_PORT", "8766"))
+BIND_PORT = BIND_HTTPS_PORT
 
 APP_TITLE = "VLESS Manager Pro — Control Panel"

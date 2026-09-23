@@ -619,7 +619,7 @@ install_web_panel() {
     log_info "Web Control Panel / Agent API (systemd: vless-panel, vless-agent)..."
     export VLESS_PANEL_ROLE="$role"
     bash "$REPO_ROOT/panel/install_panel.sh"
-    log_info "Панель: http://$(hostname -f 2>/dev/null || echo 127.0.0.1):8765/login"
+    log_info "Панель: https://$(hostname -f 2>/dev/null || echo 127.0.0.1):8765/login (HTTP fallback :8766)"
 }
 
 remote_agent_install() {
@@ -642,7 +642,8 @@ remote_agent_install() {
     install_systemd_vless_service
     systemctl start vless-xray.service 2>/dev/null || /usr/local/bin/vless-servers start 2>/dev/null || true
     if command -v ufw >/dev/null 2>&1; then
-        ufw allow 8765/tcp comment 'vless-panel' 2>/dev/null || true
+        ufw allow 8765/tcp comment 'vless-panel-https' 2>/dev/null || true
+        ufw allow 8766/tcp comment 'vless-panel-http' 2>/dev/null || true
         ufw allow "${VLESS_IPT_MIN}:${VLESS_IPT_MAX}/tcp" 2>/dev/null || true
         ufw allow 25001/udp 2>/dev/null || true
         ufw allow 443/tcp 2>/dev/null || true

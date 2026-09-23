@@ -18,6 +18,40 @@ class CertInfo:
     source: str  # letsencrypt | hysteria_copy | other
 
 
+def _parse_openssl_subject_cn(pem_path: Path) -> str | None:
+    try:
+        out = subprocess.run(
+            ["openssl", "x509", "-noout", "-subject", "-in", str(pem_path)],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        if out.returncode != 0:
+            return None
+        m = re.search(r"CN\s*=\s*([^,/]+)", out.stdout)
+        return m.group(1).strip() if m else None
+    except OSError:
+        return None
+
+
+def _parse_expiry_string(raw: str) -> dt.datetime | None:
+    raw = raw.strip()
+    if not raw:
+        return None
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S%z",
+        "%Y-%m-%d %H:%M:%S",
+    ):
+        try:
+            s = re.sub(r"(\+\d{2}):(\d{2})$", r"\1\2", raw)
+            exp = dt.datetime.strptime(s, fmt)
+            return exp.replace(tzinfo=None) if exp.tzinfo else exp
+        except ValueError:
+            continue
+    return None
+
+
 def _parse_openssl_end(pem_path: Path) -> dt.datetime | None:
     try:
         out = subprocess.run(
@@ -59,28 +93,22 @@ def certbot_certificates() -> list[CertInfo]:
     except OSError:
         return items
 
-    blocks = re.split(r"\n(?=Certificate Name:)", text)
-    for block in blocks:
-        if "Certificate Name:" not in block:
-            continue
-        name_m = re.search(r"Certificate Name:\s*(.+)", block)
-        domains_m = re.search(r"Domains:\s*(.+)", block)
-        path_m = re.search(r"Certificate Path:\s*(.+)", block)
-        expiry_m = re.search(r"Expiry Date:\s*([^\(]+)", block)
-        if not name_m or not path_m:
-            continue
-        name = name_m.group(1).strip()
-        domains = (domains_m.group(1).strip().split() if domains_m else [])
-        cert_path = path_m.group(1).strip()
-        expiry = None
-        if expiry_m:
-            try:
-                expiry = dt.datetime.strptime(
-                    expiry_m.group(1).strip(), "%Y-%m-%d %H:%M:%S%z"
-                ).replace(tzinfo=None)
-            except ValueError:
-                expiry = _parse_openssl_end(Path(cert_path))
-        else:
+    block_re = re.compile(
+        r"Certificate Name:\s*(.+?)\r?\n"
+        r"[\s\S]*?"
+        r"^\s*Domains:\s*(.+?)\r?\n"
+        r"[\s\S]*?"
+        r"^\s*Expiry Date:\s*([^\(\n]+)"
+        r"[\s\S]*?"
+        r"^\s*Certificate Path:\s*(.+?)\r?\n",
+        re.MULTILINE,
+    )
+    for m in block_re.finditer(text):
+        name = m.group(1).strip()
+        domains = m.group(2).strip().split()
+        expiry = _parse_expiry_string(m.group(3))
+        cert_path = m.group(4).strip()
+        if expiry is None:
             expiry = _parse_openssl_end(Path(cert_path))
         dl = _days_left(expiry)
         items.append(
@@ -130,14 +158,45 @@ def hysteria_cert_status() -> CertInfo | None:
         return None
     expiry = _parse_openssl_end(p)
     dl = _days_left(expiry)
+    cn = _parse_openssl_subject_cn(p)
+    label = f"Hysteria2 ({cn})" if cn else "Hysteria2 copy"
     return CertInfo(
-        name="hysteria-copy",
-        domains=["/etc/hysteria/certs"],
+        name=label,
+        domains=[cn or "/etc/hysteria/certs"],
         expiry=expiry,
         days_left=dl,
         cert_path=str(p),
         valid=dl is not None and dl >= 0,
         source="hysteria_copy",
+    )
+
+
+def active_vpn_tls_cert() -> CertInfo | None:
+    """Сертификат из tls.env (VLESS Wi‑Fi / текущий PUBLIC_HOST)."""
+    tls_env = Path("/etc/vless-manager/tls.env")
+    if not tls_env.is_file():
+        return None
+    data: dict[str, str] = {}
+    for line in tls_env.read_text().splitlines():
+        if "=" in line and not line.strip().startswith("#"):
+            k, v = line.split("=", 1)
+            data[k.strip()] = v.strip().strip('"')
+    fc = data.get("LE_FULLCHAIN", "")
+    host = data.get("PUBLIC_HOST", "")
+    if not fc or not Path(fc).is_file():
+        return None
+    expiry = _parse_openssl_end(Path(fc))
+    dl = _days_left(expiry)
+    cn = _parse_openssl_subject_cn(Path(fc)) or host
+    domains = [host] if host else ([cn] if cn else [])
+    return CertInfo(
+        name=host or cn or "vpn-active",
+        domains=domains,
+        expiry=expiry,
+        days_left=dl,
+        cert_path=fc,
+        valid=dl is not None and dl >= 0,
+        source="active_tls",
     )
 
 
@@ -174,14 +233,24 @@ def certbot_timer_status() -> dict:
     return info
 
 
+def _merge_cert_lists(*groups: list[CertInfo]) -> list[CertInfo]:
+    by_name: dict[str, CertInfo] = {}
+    for group in groups:
+        for c in group:
+            by_name[c.name] = c
+    return sorted(by_name.values(), key=lambda x: x.name.lower())
+
+
 def all_cert_status() -> dict:
-    certs = certbot_certificates()
-    if not certs:
-        certs = scan_live_certs()
+    from_bot = certbot_certificates()
+    from_live = scan_live_certs()
+    certs = _merge_cert_lists(from_bot, from_live)
     hy = hysteria_cert_status()
+    active = active_vpn_tls_cert()
     return {
         "certificates": certs,
         "hysteria": hy,
+        "active_vpn": active,
         "timer": certbot_timer_status(),
         "checked_at": dt.datetime.utcnow(),
     }

@@ -29,8 +29,39 @@
     <input type="text" name="telegram_bot_token" value="{{ settings.telegram_bot_token }}" placeholder="123456:ABC...">
     <label>Telegram Chat ID</label>
     <input type="text" name="telegram_chat_id" value="{{ settings.telegram_chat_id }}" placeholder="-100...">
-    <label>Email (локальный sendmail)</label>
+
+    <h4 class="card-subtitle">Email</h4>
+    <p class="hint">Адрес получателя. Если указан SMTP-сервер ниже — письма уходят через него, иначе через локальный sendmail на сервере.</p>
+    <label>Email получателя</label>
     <input type="email" name="notify_email" value="{{ settings.notify_email }}" placeholder="admin@example.com">
+
+    <h4 class="card-subtitle">SMTP-сервер</h4>
+    <div class="grid-3">
+      <div>
+        <label>Хост</label>
+        <input type="text" name="smtp_host" value="{{ settings.smtp_host }}" placeholder="smtp.example.com" autocomplete="off">
+      </div>
+      <div>
+        <label>Порт</label>
+        <input type="number" name="smtp_port" min="1" max="65535" value="{{ settings.smtp_port or 587 }}" class="input-sm">
+      </div>
+      <div>
+        <label>Шифрование</label>
+        <select name="smtp_security">
+          <option value="starttls" {% if settings.smtp_security == 'starttls' %}selected{% endif %}>STARTTLS (587)</option>
+          <option value="ssl" {% if settings.smtp_security == 'ssl' %}selected{% endif %}>SSL/TLS (465)</option>
+          <option value="none" {% if settings.smtp_security == 'none' %}selected{% endif %}>Без шифрования</option>
+        </select>
+      </div>
+    </div>
+    <label>Логин SMTP</label>
+    <input type="text" name="smtp_user" value="{{ settings.smtp_user }}" placeholder="user@mail.ru" autocomplete="username">
+    <label>Пароль SMTP</label>
+    <input type="password" name="smtp_password" value="" placeholder="{% if settings.smtp_password %}•••••• (оставьте пустым, чтобы не менять){% else %}пароль{% endif %}" autocomplete="new-password">
+    <label>From (отправитель)</label>
+    <input type="email" name="smtp_from_email" value="{{ settings.smtp_from_email }}" placeholder="noreply@yourdomain.ru">
+    <p class="hint">Если пусто — используется логин SMTP или noreply@&lt;хост&gt;.</p>
+
     <label class="check-line">
       <input type="checkbox" name="notify_on_cert" {% if settings.notify_on_cert %}checked{% endif %}>
       Отправлять при операциях с сертификатами

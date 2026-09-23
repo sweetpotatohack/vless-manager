@@ -29,3 +29,9 @@ def run_migrations() -> None:
             )
         except Exception:
             pass
+        _add_column(conn, "panel_settings", "smtp_host", "smtp_host VARCHAR(255) DEFAULT ''")
+        _add_column(conn, "panel_settings", "smtp_port", "smtp_port INTEGER DEFAULT 587")
+        _add_column(conn, "panel_settings", "smtp_user", "smtp_user VARCHAR(255) DEFAULT ''")
+        _add_column(conn, "panel_settings", "smtp_password", "smtp_password VARCHAR(512) DEFAULT ''")
+        _add_column(conn, "panel_settings", "smtp_security", "smtp_security VARCHAR(16) DEFAULT 'starttls'")
+        _add_column(conn, "panel_settings", "smtp_from_email", "smtp_from_email VARCHAR(256) DEFAULT ''")

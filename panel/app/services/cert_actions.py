@@ -63,6 +63,11 @@ def renew_certificates(cert_name: str | None = None) -> CertActionResult:
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     out = (r.stdout + r.stderr)[-3000:]
     sync = sync_hysteria_from_le()
+    subprocess.run(
+        ["systemctl", "restart", "vless-panel.service"],
+        capture_output=True,
+        timeout=30,
+    )
     if r.returncode != 0:
         return CertActionResult(False, f"certbot renew failed:\n{out}")
     msg = "Let's Encrypt: renew выполнен."
@@ -110,6 +115,11 @@ def reissue_new_domain(domain: str, email: str | None = None) -> CertActionResul
     sync = sync_hysteria_from_le()
     subprocess.run(["systemctl", "reload", "hysteria-server"], capture_output=True, timeout=30)
     subprocess.run(["systemctl", "reload", "xray-reality"], capture_output=True, timeout=30)
+    subprocess.run(
+        ["systemctl", "restart", "vless-panel.service"],
+        capture_output=True,
+        timeout=30,
+    )
     msg = f"Выпущен сертификат для {domain}, tls.env обновлён."
     if sync.ok:
         msg += " " + sync.message
