@@ -20,3 +20,12 @@ def run_migrations() -> None:
         _add_column(conn, "nodes", "last_seen", "last_seen DATETIME")
         _add_column(conn, "proxy_users", "exit_country", "exit_country VARCHAR(128) DEFAULT ''")
         _add_column(conn, "proxy_users", "exit_ip", "exit_ip VARCHAR(45) DEFAULT ''")
+        try:
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_proxy_users_node_username "
+                    "ON proxy_users (node_id, username)"
+                )
+            )
+        except Exception:
+            pass

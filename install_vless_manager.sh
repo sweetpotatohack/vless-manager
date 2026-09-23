@@ -84,6 +84,7 @@ Wants=network-online.target
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/bin/vless-servers start
+ExecStartPost=/usr/local/bin/vless-servers reconcile
 ExecStop=/usr/local/bin/vless-servers stop
 TimeoutStartSec=180
 StandardOutput=journal

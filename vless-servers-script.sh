@@ -15,11 +15,148 @@ LOG_DIR="/var/log"
 
 port_is_listening() {
     local p="$1"
+    # Только TCP: UDP (Hysteria2 на том же номере) не блокирует VLESS Wi‑Fi.
     if command -v ss >/dev/null 2>&1; then
-        ss -H -tuln "sport = :$p" 2>/dev/null | grep -q .
+        ss -H -tln "sport = :$p" 2>/dev/null | grep -q .
         return $?
     fi
     netstat -tln 2>/dev/null | grep -q ":$p "
+}
+
+pids_on_port() {
+    local p="$1"
+    if command -v ss >/dev/null 2>&1; then
+        ss -H -tlnp "sport = :$p" 2>/dev/null \
+            | grep -oE 'pid=[0-9]+' \
+            | cut -d= -f2 \
+            | sort -u
+    fi
+}
+
+xray_pid_for_config() {
+    local config_file="$1"
+    local port="$2" pid cmd
+    config_file=$(readlink -f "$config_file" 2>/dev/null || echo "$config_file")
+    for pid in $(pids_on_port "$port"); do
+        [[ -r "/proc/$pid/cmdline" ]] || continue
+        cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
+        [[ "$cmd" == *xray* ]] || continue
+        if [[ "$cmd" == *"$config_file"* ]] || [[ "$cmd" == *"$(basename "$config_file")"* ]]; then
+            echo "$pid"
+            return 0
+        fi
+    done
+    return 1
+}
+
+dedupe_port_keep_pid() {
+    local port="$1" keep_pid="$2" pid
+    for pid in $(pids_on_port "$port"); do
+        [[ "$pid" == "$keep_pid" ]] && continue
+        [[ -r "/proc/$pid/cmdline" ]] || continue
+        if tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q xray; then
+            kill "$pid" 2>/dev/null || true
+        fi
+    done
+}
+
+reconcile_one_client() {
+    local client_name="$1"
+    local config_file="${CONFIG_DIR}/${client_name}.json"
+    local pid_file="${PID_DIR}/vless-${client_name}.pid"
+    local port registered="" keeper="" adopted=0
+
+    [[ -f "$config_file" ]] || return 1
+    port=$(get_config_port "$config_file")
+    [[ -n "$port" ]] || return 1
+
+    if [[ -f "$pid_file" ]]; then
+        registered=$(cat "$pid_file" 2>/dev/null)
+        if [[ -n "$registered" ]] && kill -0 "$registered" 2>/dev/null \
+            && port_is_listening "$port"; then
+            dedupe_port_keep_pid "$port" "$registered"
+            return 0
+        fi
+        rm -f "$pid_file"
+    fi
+
+    if keeper=$(xray_pid_for_config "$config_file" "$port"); then
+        echo "$keeper" > "$pid_file"
+        dedupe_port_keep_pid "$port" "$keeper"
+        echo -e "${GREEN}✅ $client_name: привязан PID $keeper (порт $port)${NC}"
+        return 0
+    fi
+
+    if port_is_listening "$port"; then
+        echo -e "${RED}❌ $client_name: порт $port занят чужим процессом${NC}"
+        return 1
+    fi
+
+    if start_single_server "$client_name"; then
+        adopted=1
+    fi
+    [[ "$adopted" -eq 1 ]]
+}
+
+# Xray must not live in vless-panel.service cgroup (panel restart would kill it).
+launch_xray_background() {
+    local client_name="$1" config_file="$2" log_file="$3"
+    local unit="vless-client-${client_name}"
+
+    if command -v systemd-run >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+        systemd-run --scope --unit="$unit" -p Slice=system.slice \
+            bash -c "exec xray run -config $(printf '%q' "$config_file") >> $(printf '%q' "$log_file") 2>&1" &
+        disown 2>/dev/null || true
+        local i main_pid=""
+        for i in $(seq 1 40); do
+            main_pid=$(systemctl show -p MainPID --value "${unit}.scope" 2>/dev/null || true)
+            if [[ -n "$main_pid" && "$main_pid" != "0" ]] && kill -0 "$main_pid" 2>/dev/null; then
+                echo "$main_pid"
+                return 0
+            fi
+            sleep 0.15
+        done
+    fi
+
+    if command -v setsid >/dev/null 2>&1; then
+        setsid xray run -config "$config_file" >> "$log_file" 2>&1 &
+    else
+        nohup xray run -config "$config_file" >> "$log_file" 2>&1 &
+    fi
+    echo $!
+}
+
+client_server_healthy() {
+    local client_name="$1"
+    local config_file="${CONFIG_DIR}/${client_name}.json"
+    local pid_file="${PID_DIR}/vless-${client_name}.pid"
+    local port pid
+
+    [[ -f "$config_file" ]] || return 1
+    port=$(get_config_port "$config_file")
+    [[ -n "$port" ]] || return 1
+
+    if [[ -f "$pid_file" ]]; then
+        pid=$(cat "$pid_file" 2>/dev/null)
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && port_is_listening "$port"; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+reconcile_all_servers() {
+    local client ok=0 failed=0
+    echo -e "${BLUE}🔧 Проверка inbound Wi‑Fi (reconcile)...${NC}"
+    for client in $(get_all_clients); do
+        if reconcile_one_client "$client"; then
+            ((ok++)) || true
+        else
+            ((failed++)) || true
+        fi
+    done
+    echo -e "${GREEN}✅ reconcile: OK $ok, ошибок $failed${NC}"
+    [[ "$failed" -eq 0 ]]
 }
 
 get_config_port() {
@@ -81,14 +218,21 @@ start_single_server() {
             return 1
         fi
         if port_is_listening "$port"; then
+            local existing=""
+            if existing=$(xray_pid_for_config "$config_file" "$port"); then
+                echo "$existing" > "$pid_file"
+                dedupe_port_keep_pid "$port" "$existing"
+                echo -e "${GREEN}✅ Сервер для $client_name уже слушает порт $port (PID: $existing)${NC}"
+                return 0
+            fi
             echo -e "${RED}❌ Порт $port уже занят другим процессом${NC}"
             return 1
         fi
     fi
 
     echo -e "${BLUE}🚀 Запускаем сервер для $client_name...${NC}"
-    nohup xray run -config "$config_file" > "$log_file" 2>&1 &
-    local new_pid=$!
+    local new_pid
+    new_pid=$(launch_xray_background "$client_name" "$config_file" "$log_file")
     echo "$new_pid" > "$pid_file"
     
     sleep 3
@@ -195,6 +339,9 @@ case "$1" in
             done
         fi
         ;;
+    reconcile)
+        reconcile_all_servers
+        ;;
     restart)
         if [ -n "$2" ]; then
             stop_single_server "$2"
@@ -211,7 +358,7 @@ case "$1" in
         fi
         ;;
     *)
-        echo "Использование: $0 {start|stop|status|restart} [client_name]"
+        echo "Использование: $0 {start|stop|status|restart|reconcile} [client_name]"
         exit 1
         ;;
 esac

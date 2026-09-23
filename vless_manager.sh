@@ -1367,6 +1367,58 @@ show_client_details() {
     read -p "Нажми Enter для продолжения..."
 }
 
+# Удалить клиента (Wi‑Fi json, mobile REALITY uuid, URL, QR) — для panel/cli
+delete_vless_client() {
+    local client_name="$1"
+    local do_wifi="${2:-1}"
+    local do_mobile="${3:-1}"
+    local mob_name="$client_name"
+
+    [[ -n "$client_name" ]] || return 1
+    if [[ "$do_wifi" == "1" && "$do_mobile" == "1" ]]; then
+        mob_name="${client_name}-mob"
+    elif [[ "$do_mobile" == "1" && "$do_wifi" != "1" ]]; then
+        mob_name="$client_name"
+    fi
+
+    if [[ "$do_wifi" == "1" ]]; then
+        /usr/local/bin/vless-servers stop "$client_name" 2>/dev/null || true
+        rm -f "$CLIENT_DIR/${client_name}.json"
+        rm -f "$CONFIG_DIR/urls/${client_name}.txt"
+        rm -f "$QR_DIR/${client_name}.png"
+        if ! tls_uses_letsencrypt; then
+            rm -f "$CERT_DIR/${client_name}.crt" "$CERT_DIR/${client_name}.key"
+        fi
+        rm -f "$BUNDLE_DIR/${client_name}.sing-box.json"
+        if [[ -f "$CONFIG_DIR/clients.db" ]]; then
+            sqlite3 "$CONFIG_DIR/clients.db" "DELETE FROM clients WHERE name='$client_name';" 2>/dev/null || true
+        fi
+    fi
+
+    if [[ "$do_mobile" == "1" ]]; then
+        rm -f "$MOBILE_REALITY_DIR/${mob_name}.uuid"
+        rm -f "$CONFIG_DIR/urls/${mob_name}.txt"
+        rm -f "$CONFIG_DIR/urls/${mob_name}-hy2.txt"
+        rm -f "$CONFIG_DIR/urls/${mob_name}-v2raytun.txt"
+        rm -f "$CONFIG_DIR/urls/${client_name}-hy2.txt"
+        rm -f "$CONFIG_DIR/urls/${client_name}.txt"
+        rm -f "$QR_DIR/${mob_name}.png"
+        rm -f "$QR_DIR/${client_name}.png"
+        if [[ -f "$CONFIG_DIR/clients.db" ]]; then
+            sqlite3 "$CONFIG_DIR/clients.db" "DELETE FROM clients WHERE name='$mob_name';" 2>/dev/null || true
+            sqlite3 "$CONFIG_DIR/clients.db" "DELETE FROM clients WHERE name='$client_name';" 2>/dev/null || true
+        fi
+        if [[ -f "$REALITY_CONFIG_FILE" ]] && command -v python3 >/dev/null 2>&1; then
+            load_reality_env
+            rebuild_mobile_reality_hub 2>/dev/null || true
+            restart_xray_reality 2>/dev/null || true
+        fi
+    fi
+
+    log "INFO" "Удалён клиент: $client_name (wifi=$do_wifi mobile=$do_mobile)"
+    return 0
+}
+
 # Delete config menu (enhanced)
 delete_config_menu() {
     clear
@@ -1422,25 +1474,13 @@ delete_config_menu() {
     read -r confirm
     
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        # Останавливаем сервер если запущен
-        /usr/local/bin/vless-servers stop "$client_name" 2>/dev/null || true
-        
-        # Удаляем файлы
-        rm -f "$CLIENT_DIR/${client_name}.json"
-        rm -f "$CONFIG_DIR/urls/${client_name}.txt"
-        rm -f "$QR_DIR/${client_name}.png"
-        if ! tls_uses_letsencrypt; then
-            rm -f "$CERT_DIR/${client_name}.crt" "$CERT_DIR/${client_name}.key"
+        local _w=1 _m=0
+        if is_mobile_reality_client "$client_name"; then
+            _m=1
+            _w=0
         fi
-        rm -f "$BUNDLE_DIR/${client_name}.sing-box.json"
-        
-        # Удаляем из базы
-        if [[ -f "$CONFIG_DIR/clients.db" ]]; then
-            sqlite3 "$CONFIG_DIR/clients.db" "DELETE FROM clients WHERE name='$client_name';" 2>/dev/null || true
-        fi
-        
+        delete_vless_client "$client_name" "$_w" "$_m"
         echo -e "${GREEN}Конфиг для '$client_name' успешно удален (включая QR-код)!${NC}"
-        log "INFO" "Удален конфиг для клиента: $client_name"
     else
         echo -e "${YELLOW}Отменено.${NC}"
     fi
@@ -1794,8 +1834,19 @@ EOF
     # Setup enhanced networking
     setup_enhanced_iptables
     
-    # Start server
-    /usr/local/bin/vless-servers start "$client_name"
+    # Start server (outside panel cgroup when started via systemd-run)
+    if ! /usr/local/bin/vless-servers start "$client_name"; then
+        echo -e "${RED}Не удалось запустить Xray для $client_name${NC}" >&2
+        return 1
+    fi
+    local started_port
+    started_port=$(extract_port_from_config "$CLIENT_DIR/${client_name}.json")
+    if [[ -n "$started_port" ]] && command -v ss >/dev/null 2>&1; then
+        if ! ss -H -tln "sport = :$started_port" 2>/dev/null | grep -q .; then
+            echo -e "${RED}Порт $started_port не слушается после запуска${NC}" >&2
+            return 1
+        fi
+    fi
     
     # Show result
     echo -e "${GREEN}╔════════════════════════════════════════════════════════════════╗${NC}"
@@ -1970,19 +2021,8 @@ create_mobile_vless_config() {
     fi
 
     if is_mobile_reality_client "$client_name"; then
-        echo -e "${YELLOW}Mobile LTE для $client_name — обновляю REALITY/Hysteria...${NC}"
-        local exist_uuid vless_url hy2_url qr_path=""
-        exist_uuid=$(cat "$MOBILE_REALITY_DIR/${client_name}.uuid")
-        ensure_reality_keys || true
-        setup_nginx_reality_stream || true
-        setup_hysteria_mobile || true
-        register_mobile_reality_client "$client_name" "$exist_uuid"
-        vless_url=$(build_mobile_reality_url "$client_name" "$exist_uuid")
-        hy2_url=$(build_hysteria_url "$client_name")
-        write_v2raytun_mobile_notes "$client_name" "$vless_url" "$hy2_url"
-        generate_qr_code "$vless_url" "$client_name" && qr_path="$QR_DIR/${client_name}.png"
-        display_qr_terminal "$vless_url"
-        return 0
+        echo -e "${RED}Mobile конфиг для $client_name уже существует! Сначала удалите его.${NC}"
+        return 1
     fi
 
     local uuid vless_url hy2_url qr_path="" public_host
@@ -2138,8 +2178,14 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                 create_mobile_vless_config "$name"
                 exit $?
                 ;;
+            delete-client)
+                local wifi_flag="${4:-1}" mobile_flag="${5:-1}"
+                [[ -n "$name" ]] || { echo "usage: cli delete-client NAME [wifi 0|1] [mobile 0|1]" >&2; exit 2; }
+                delete_vless_client "$name" "$wifi_flag" "$mobile_flag"
+                exit $?
+                ;;
             *)
-                echo "usage: $0 cli create-wifi|create-mobile NAME" >&2
+                echo "usage: $0 cli create-wifi|create-mobile|delete-client NAME" >&2
                 exit 2
                 ;;
         esac

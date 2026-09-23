@@ -1,6 +1,10 @@
 {% extends "base.html" %}
 {% block content %}
 <h2>Клиент: {{ user.username }}</h2>
+{% if flash_err %}
+<div class="alert alert-error animate-in">{{ flash_err }}</div>
+{% endif %}
+
 <p style="color:var(--muted)">
   Нода: {{ node.name }} · {{ node.domain }} ·
   выход: <strong>{{ user.exit_country or node.country }}</strong>,
@@ -34,5 +38,10 @@
 </div>
 {% endif %}
 
-<p><a href="/proxy" class="btn btn-cyan">← К списку</a></p>
+<div class="form-actions">
+  <a href="/proxy" class="btn btn-cyan">← К списку</a>
+  <form method="post" action="/proxy/{{ user.id }}/delete" onsubmit="return confirm('Удалить конфиг {{ user.username }}? Wi‑Fi и LTE на сервере будут сняты.');">
+    <button type="submit" class="btn btn-red">Удалить конфиг</button>
+  </form>
+</div>
 {% endblock %}

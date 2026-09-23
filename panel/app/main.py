@@ -40,7 +40,14 @@ from app.services.certs import all_cert_status
 from app.services.settings import get_settings
 from app.services.master_url import get_master_public_url
 from app.services.ports import port_status
-from app.services.provision import provision_local, provision_remote, qr_png_path
+from app.services.provision import (
+    delete_local_client,
+    delete_remote_client,
+    provision_local,
+    provision_remote,
+    qr_png_path,
+    reconcile_wifi_servers,
+)
 
 APP_DIR = Path(__file__).resolve().parent
 REPO_PANEL = APP_DIR.parent
@@ -72,6 +79,7 @@ async def on_startup():
         get_settings(db)
     finally:
         db.close()
+    reconcile_wifi_servers()
     asyncio.create_task(cert_autorenew_worker())
 
 
@@ -289,6 +297,8 @@ def proxy_list(
         .limit(100)
         .all()
     )
+    flash_ok = request.query_params.get("msg")
+    flash_err = request.query_params.get("err")
     return templates.TemplateResponse(
         "proxy.html",
         {
@@ -297,7 +307,8 @@ def proxy_list(
             "admin": admin,
             "nodes": nodes,
             "users": users,
-            "error": None,
+            "error": flash_err,
+            "flash_ok": flash_ok,
         },
     )
 
@@ -320,12 +331,34 @@ async def proxy_create(
     if not do_wifi and not do_mobile:
         raise HTTPException(400, "Выберите Wi‑Fi и/или LTE профиль")
 
+    uname = username.strip()
+    dup = (
+        db.query(ProxyUser)
+        .filter(ProxyUser.node_id == node.id, ProxyUser.username == uname)
+        .first()
+    )
+    if dup:
+        nodes = db.query(Node).filter(Node.is_active.is_(True)).all()
+        users = db.query(ProxyUser).order_by(ProxyUser.created_at.desc()).limit(100).all()
+        return templates.TemplateResponse(
+            "proxy.html",
+            {
+                "request": request,
+                "title": APP_TITLE,
+                "admin": admin,
+                "nodes": nodes,
+                "users": users,
+                "error": f"Пользователь «{uname}» уже есть на этой ноде. Удалите старый конфиг.",
+            },
+            status_code=400,
+        )
+
     api_base = node.api_base
     if node.role == "local":
         api_base = api_base or "http://127.0.0.1:8765"
         result = await asyncio.to_thread(
             provision_local,
-            username.strip(),
+            uname,
             wifi=do_wifi,
             mobile=do_mobile,
         )
@@ -335,7 +368,7 @@ async def proxy_create(
         result = await provision_remote(
             api_base,
             node.api_token,
-            username.strip(),
+            uname,
             wifi=do_wifi,
             mobile=do_mobile,
         )
@@ -358,7 +391,7 @@ async def proxy_create(
 
     pu = ProxyUser(
         node_id=node.id,
-        username=username.strip(),
+        username=uname,
         has_wifi=do_wifi,
         has_mobile=do_mobile,
         wifi_vless_url=result.wifi_vless_url,
@@ -389,6 +422,7 @@ def proxy_detail(
     mob_name = f"{pu.username}-mob" if pu.has_wifi and pu.has_mobile else pu.username
     qr_wifi = qr_png_path(pu.username, "wifi")
     qr_mobile = qr_png_path(mob_name, "mobile")
+    flash_err = request.query_params.get("err")
     return templates.TemplateResponse(
         "proxy_detail.html",
         {
@@ -399,8 +433,50 @@ def proxy_detail(
             "node": node,
             "qr_wifi": qr_wifi.name if qr_wifi else None,
             "qr_mobile": qr_mobile.name if qr_mobile else None,
+            "flash_err": flash_err,
         },
     )
+
+
+@app.post("/proxy/{user_id}/delete")
+async def proxy_delete(
+    user_id: int,
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    pu = db.get(ProxyUser, user_id)
+    if not pu:
+        raise HTTPException(404)
+    node = db.get(Node, pu.node_id)
+    if not node:
+        raise HTTPException(400, "Нода не найдена")
+
+    if node.role == "local":
+        result = await asyncio.to_thread(
+            delete_local_client,
+            pu.username,
+            wifi=pu.has_wifi,
+            mobile=pu.has_mobile,
+        )
+    else:
+        if not node.api_base or not node.api_token:
+            raise HTTPException(400, "Удалённая нода недоступна")
+        result = await delete_remote_client(
+            node.api_base,
+            node.api_token,
+            pu.username,
+            wifi=pu.has_wifi,
+            mobile=pu.has_mobile,
+        )
+
+    if not result.ok:
+        return RedirectResponse(
+            f"/proxy/{user_id}?err={quote(result.message[:180])}",
+            status_code=303,
+        )
+    db.delete(pu)
+    db.commit()
+    return RedirectResponse("/proxy?msg=Клиент удалён", status_code=303)
 
 
 @app.get("/qr/{filename}")
@@ -589,6 +665,25 @@ def api_ports(request: Request, db: Session = Depends(get_db)):
     return port_status()
 
 
+@app.get("/api/v1/username-available")
+def api_username_available(
+    request: Request,
+    db: Session = Depends(get_db),
+    username: str = "",
+    wifi: str = "true",
+    mobile: str = "true",
+):
+    _authorize_agent_api(request, db)
+    from app.services.name_check import validate_new_username
+
+    do_wifi = wifi.lower() in ("1", "true", "yes", "on")
+    do_mobile = mobile.lower() in ("1", "true", "yes", "on")
+    ok, reason = validate_new_username(username.strip(), wifi=do_wifi, mobile=do_mobile)
+    if ok:
+        return {"available": True}
+    return {"available": False, "reason": reason}
+
+
 @app.get("/api/v1/agent/install.sh")
 def api_agent_install_sh(token: str, request: Request, db: Session = Depends(get_db)):
     node = _node_by_agent_token(db, token)
@@ -668,6 +763,22 @@ async def api_nodes_register(request: Request, db: Session = Depends(get_db)):
     node.last_seen = datetime.utcnow()
     db.commit()
     return {"ok": True, "node_id": node.id, "name": node.name}
+
+
+@app.post("/api/v1/delete")
+async def api_delete(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    _authorize_agent_api(request, db)
+    body = await request.json()
+    username = body.get("username", "")
+    wifi = bool(body.get("wifi", True))
+    mobile = bool(body.get("mobile", True))
+    result = delete_local_client(username, wifi=wifi, mobile=mobile)
+    if not result.ok:
+        raise HTTPException(400, result.message)
+    return {"ok": True}
 
 
 @app.post("/api/v1/provision")

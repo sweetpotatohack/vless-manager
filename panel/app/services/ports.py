@@ -11,11 +11,11 @@ NEVER = {80, 443, 8080, 8443, 8000, 8888, 3000, 5000, 3333, 53, 853, 4443, 9443,
 CLIENT_DIR = Path("/etc/vless-manager/clients")
 
 
-def _listening_tcp_udp_ports() -> set[int]:
+def _listening_tcp_ports() -> set[int]:
     ports: set[int] = set()
     try:
         out = subprocess.run(
-            ["ss", "-H", "-tuln"],
+            ["ss", "-H", "-tln"],
             capture_output=True,
             text=True,
             timeout=15,
@@ -56,8 +56,27 @@ def _port_blocked(p: int, listening: set[int], assigned: set[int]) -> bool:
     return False
 
 
+def _listening_udp_ports() -> set[int]:
+    ports: set[int] = set()
+    try:
+        out = subprocess.run(
+            ["ss", "-H", "-uln"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        for line in out.stdout.splitlines():
+            m = re.search(r":(\d+)\s", line)
+            if m:
+                ports.add(int(m.group(1)))
+    except OSError:
+        pass
+    return ports
+
+
 def find_free_wifi_port() -> int | None:
-    listening = _listening_tcp_udp_ports()
+    listening = _listening_tcp_ports()
     assigned = _assigned_vless_ports()
     for p in range(VLESS_MIN, VLESS_MAX + 1):
         if not _port_blocked(p, listening, assigned):
@@ -66,11 +85,11 @@ def find_free_wifi_port() -> int | None:
 
 
 def port_status() -> dict:
-    listening = sorted(_listening_tcp_udp_ports())
+    listening = sorted(_listening_tcp_ports())
     assigned = sorted(_assigned_vless_ports())
     free = find_free_wifi_port()
     hy = 25001
-    hy_busy = hy in listening
+    hy_busy = hy in _listening_udp_ports()
     reality_busy = 443 in listening
     return {
         "listening": listening,

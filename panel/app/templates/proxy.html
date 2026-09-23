@@ -4,6 +4,9 @@
 
 <div class="card">
   <h3 style="margin-top:0">Новый пользователь</h3>
+  {% if flash_ok %}
+  <div class="alert alert-ok animate-in">{{ flash_ok }}</div>
+  {% endif %}
   {% if error %}
   <div class="alert alert-error">{{ error }}</div>
   {% endif %}
@@ -44,7 +47,7 @@
 <div class="card">
   <h3 style="margin-top:0">Последние клиенты</h3>
   <table>
-    <thead><tr><th>Имя</th><th>Страна</th><th>IP</th><th>Дата</th><th></th></tr></thead>
+    <thead><tr><th>Имя</th><th>Страна</th><th>IP</th><th>Дата</th><th>Действия</th></tr></thead>
     <tbody>
     {% for u in users %}
       <tr>
@@ -52,7 +55,12 @@
         <td>{{ u.exit_country or '—' }}</td>
         <td>{{ u.exit_ip or '—' }}</td>
         <td>{{ u.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
-        <td><a href="/proxy/{{ u.id }}">Ссылки / QR</a></td>
+        <td class="form-actions" style="margin:0">
+          <a href="/proxy/{{ u.id }}" class="btn btn-cyan" style="padding:0.35rem 0.65rem;font-size:0.62rem">Ссылки</a>
+          <form method="post" action="/proxy/{{ u.id }}/delete" style="display:inline" onsubmit="return confirm('Удалить конфиг {{ u.username }} на ноде?');">
+            <button type="submit" class="btn btn-red" style="padding:0.35rem 0.65rem;font-size:0.62rem">Удалить</button>
+          </form>
+        </td>
       </tr>
     {% else %}
       <tr><td colspan="5" style="color:var(--muted)">Пока нет записей</td></tr>

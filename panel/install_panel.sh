@@ -77,6 +77,7 @@ Environment=VLESS_MANAGER_SH=/opt/vless-manager/vless_manager.sh
 ExecStart=$VENV/bin/uvicorn app.main:app --host 0.0.0.0 --port 8765
 Restart=on-failure
 RestartSec=3
+KillMode=process
 LimitNOFILE=65535
 
 [Install]

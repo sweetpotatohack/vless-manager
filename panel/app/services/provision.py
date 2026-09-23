@@ -8,7 +8,37 @@ from pathlib import Path
 import httpx
 
 from app.config import QR_DIR, URL_DIR, VLESS_MANAGER_SH
+from app.services.name_check import validate_new_username
 from app.services.ports import ensure_can_provision
+
+
+def reconcile_wifi_servers() -> None:
+    """Поднять упавшие inbound после перезапуска панели (старые процессы были в её cgroup)."""
+    try:
+        subprocess.run(
+            ["/usr/local/bin/vless-servers", "reconcile"],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+
+def ensure_wifi_server_running(username: str) -> tuple[bool, str]:
+    try:
+        r = subprocess.run(
+            ["/usr/local/bin/vless-servers", "start", username],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        out = (r.stdout + r.stderr).strip()
+        if r.returncode != 0:
+            return False, out[:500] or "vless-servers start failed"
+        return True, "OK"
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return False, str(e)
 
 
 @dataclass
@@ -52,6 +82,10 @@ def provision_local(username: str, *, wifi: bool, mobile: bool) -> ProvisionResu
     if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$", username):
         return ProvisionResult(False, "Недопустимое имя пользователя")
 
+    ok_name, name_msg = validate_new_username(username, wifi=wifi, mobile=mobile)
+    if not ok_name:
+        return ProvisionResult(False, name_msg)
+
     mgr = VLESS_MANAGER_SH
     if not mgr.is_file():
         mgr = Path(__file__).resolve().parents[3] / "vless_manager.sh"
@@ -73,7 +107,9 @@ def provision_local(username: str, *, wifi: bool, mobile: bool) -> ProvisionResu
             env={**__import__("os").environ, "VLESS_CLI": "1"},
         )
         out = r.stdout + r.stderr
-        if r.returncode != 0 and "уже существует" not in out:
+        if r.returncode != 0 or "уже существует" in out:
+            if "уже существует" in out:
+                return ProvisionResult(False, f"Конфиг «{username}» уже существует")
             if "Выбери опцию" in out or "ГЛАВНОЕ МЕНЮ" in out:
                 return ProvisionResult(
                     False,
@@ -82,6 +118,12 @@ def provision_local(username: str, *, wifi: bool, mobile: bool) -> ProvisionResu
                     "и перезапустите panel.",
                 )
             return ProvisionResult(False, out[:2000] or "create-wifi failed")
+        ok_run, run_msg = ensure_wifi_server_running(username)
+        if not ok_run:
+            return ProvisionResult(
+                False,
+                f"Конфиг создан, но inbound не слушает порт: {run_msg}",
+            )
         wifi_url = _read_url_file(username)
 
     if mobile:
@@ -94,7 +136,9 @@ def provision_local(username: str, *, wifi: bool, mobile: bool) -> ProvisionResu
             env={**__import__("os").environ, "VLESS_CLI": "1"},
         )
         out = r.stdout + r.stderr
-        if r.returncode != 0 and "уже существует" not in out:
+        if r.returncode != 0 or "уже существует" in out:
+            if "уже существует" in out:
+                return ProvisionResult(False, f"Конфиг «{mob_name}» уже существует")
             if "Выбери опцию" in out or "ГЛАВНОЕ МЕНЮ" in out:
                 return ProvisionResult(
                     False,
@@ -131,6 +175,23 @@ async def fetch_remote_port_status(api_base: str, token: str) -> tuple[bool, dic
         return False, str(e)
 
 
+async def check_username_remote(
+    api_base: str, token: str, username: str, *, wifi: bool, mobile: bool
+) -> ProvisionResult:
+    url = api_base.rstrip("/") + "/api/v1/username-available"
+    headers = {"Authorization": f"Bearer {token}"}
+    params = {"username": username, "wifi": str(wifi).lower(), "mobile": str(mobile).lower()}
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(url, headers=headers, params=params)
+            data = resp.json()
+            if resp.status_code >= 400 or not data.get("available"):
+                return ProvisionResult(False, data.get("reason", resp.text)[:500])
+            return ProvisionResult(True, "OK")
+    except Exception as e:
+        return ProvisionResult(False, str(e))
+
+
 async def ensure_remote_can_provision(
     api_base: str, token: str, *, wifi: bool, mobile: bool
 ) -> ProvisionResult:
@@ -154,6 +215,11 @@ async def provision_remote(
     wifi: bool,
     mobile: bool,
 ) -> ProvisionResult:
+    name_pre = await check_username_remote(
+        api_base, token, username, wifi=wifi, mobile=mobile
+    )
+    if not name_pre.ok:
+        return name_pre
     pre = await ensure_remote_can_provision(api_base, token, wifi=wifi, mobile=mobile)
     if not pre.ok:
         return pre
@@ -175,6 +241,45 @@ async def provision_remote(
                 wifi_port=data.get("wifi_port"),
                 uuid=data.get("uuid"),
             )
+    except Exception as e:
+        return ProvisionResult(False, str(e))
+
+
+def delete_local_client(username: str, *, wifi: bool, mobile: bool) -> ProvisionResult:
+    mgr = VLESS_MANAGER_SH
+    if not mgr.is_file():
+        mgr = Path(__file__).resolve().parents[3] / "vless_manager.sh"
+    if not mgr.is_file():
+        return ProvisionResult(False, f"Не найден vless_manager.sh ({mgr})")
+    w = "1" if wifi else "0"
+    m = "1" if mobile else "0"
+    r = subprocess.run(
+        ["/bin/bash", str(mgr), "cli", "delete-client", username, w, m],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={**__import__("os").environ, "VLESS_CLI": "1"},
+    )
+    if r.returncode != 0:
+        return ProvisionResult(False, (r.stderr or r.stdout or "delete failed")[:2000])
+    return ProvisionResult(True, "Конфиг удалён")
+
+
+async def delete_remote_client(
+    api_base: str, token: str, username: str, *, wifi: bool, mobile: bool
+) -> ProvisionResult:
+    url = api_base.rstrip("/") + "/api/v1/delete"
+    headers = {"Authorization": f"Bearer {token}"}
+    payload = {"username": username, "wifi": wifi, "mobile": mobile}
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            if resp.status_code >= 400:
+                detail = resp.json().get("detail", resp.text) if resp.headers.get(
+                    "content-type", ""
+                ).startswith("application/json") else resp.text
+                return ProvisionResult(False, str(detail)[:2000])
+            return ProvisionResult(True, "Конфиг удалён на удалённой ноде")
     except Exception as e:
         return ProvisionResult(False, str(e))
 
