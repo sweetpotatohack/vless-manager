@@ -19,11 +19,13 @@
   <h3 class="card-title">Управление</h3>
   <div class="actions-grid">
     <form method="post" action="/certs/renew" class="action-block">
+      {% include "csrf_input.html" %}
       <p><strong>Продление</strong> — текущий DNS ({{ tls.public_host or 'из tls.env' }})</p>
       <input type="hidden" name="cert_name" value="">
       <button type="submit" class="btn btn-blue">Продлить LE сейчас</button>
     </form>
     <form method="post" action="/certs/reissue" class="action-block">
+      {% include "csrf_input.html" %}
       <p><strong>Перевыпуск</strong> — новый DNS (standalone :80)</p>
       <label>Домен</label>
       <input type="text" name="domain" required placeholder="vpn.example.com">
@@ -32,6 +34,7 @@
       <button type="submit" class="btn btn-red">Выпустить на новый DNS</button>
     </form>
     <form method="post" action="/certs/sync-hysteria" class="action-block">
+      {% include "csrf_input.html" %}
       <p><strong>Hysteria2</strong> — скопировать LE → /etc/hysteria/certs</p>
       <button type="submit" class="btn btn-cyan">Синхронизировать Hysteria</button>
     </form>
@@ -41,6 +44,7 @@
 <div class="card">
   <h3 class="card-title">Автопродление</h3>
   <form method="post" action="/certs/settings">
+    {% include "csrf_input.html" %}
     <label class="check-line">
       <input type="checkbox" name="auto_renew" {% if settings.auto_renew_enabled %}checked{% endif %}>
       Включить автопродление (проверка каждый час)

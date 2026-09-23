@@ -9,13 +9,15 @@ from urllib.parse import quote
 from datetime import datetime
 from pathlib import Path
 
+from typing import Annotated
+
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
-from app.auth import hash_password, verify_password
+from app.auth import hash_password, verify_login_password, verify_password
 from app.bootstrap import ensure_default_admin, ensure_local_node
 from app.config import (
     APP_TITLE,
@@ -48,20 +50,56 @@ from app.services.provision import (
     qr_png_path,
     reconcile_wifi_servers,
 )
+from app.security import (
+    apply_security_headers,
+    attach_csrf_cookie,
+    client_ip,
+    ensure_csrf_request_state,
+    login_rate_limiter,
+    normalize_login_username,
+    validate_password_length,
+    verify_csrf,
+)
 
 APP_DIR = Path(__file__).resolve().parent
 REPO_PANEL = APP_DIR.parent
 REPO_ROOT = REPO_PANEL.parent
 templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
+templates.env.autoescape = True
 
 app = FastAPI(title=APP_TITLE)
 app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
+
+
+async def require_form_csrf(
+    request: Request,
+    csrf_token: Annotated[str, Form()] = "",
+) -> None:
+    verify_csrf(request, csrf_token)
+
+
+def _response_is_secure(request: Request) -> bool:
+    if request.url.scheme == "https":
+        return True
+    forwarded = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip()
+    return forwarded == "https"
+
+
+@app.middleware("http")
+async def panel_security_middleware(request: Request, call_next):
+    ensure_csrf_request_state(request)
+    response = await call_next(request)
+    apply_security_headers(response)
+    attach_csrf_cookie(response, request, secure=_response_is_secure(request))
+    return response
 
 
 @app.exception_handler(HTTPException)
 async def panel_http_exception_handler(request: Request, exc: HTTPException):
     """Браузер → /login, API → JSON."""
     if exc.status_code in (401, 403) and not request.url.path.startswith("/api/"):
+        if exc.status_code == 403 and "CSRF" in str(exc.detail):
+            return RedirectResponse(url="/login?err=csrf", status_code=303)
         return RedirectResponse(url="/login", status_code=303)
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
@@ -84,12 +122,19 @@ async def on_startup():
 
 
 @app.get("/login", response_class=HTMLResponse)
-def login_page(request: Request, admin: AdminUser | None = Depends(get_optional_admin)):
+def login_page(
+    request: Request,
+    admin: AdminUser | None = Depends(get_optional_admin),
+    err: str | None = None,
+):
     if admin:
         return RedirectResponse("/dashboard", status_code=303)
+    error = None
+    if err == "csrf":
+        error = "Сессия формы истекла. Обновите страницу и войдите снова."
     return templates.TemplateResponse(
         "login.html",
-        {"request": request, "title": "Control Panel", "error": None},
+        {"request": request, "title": "Control Panel", "error": error},
     )
 
 
@@ -98,10 +143,25 @@ def login_submit(
     request: Request,
     username: str = Form(...),
     password: str = Form(...),
+    csrf_token: str = Form(""),
     db: Session = Depends(get_db),
 ):
-    admin = db.query(AdminUser).filter(AdminUser.username == username.strip()).first()
-    if not admin or not verify_password(password, admin.password_hash):
+    verify_csrf(request, csrf_token)
+    ip = client_ip(request)
+    if login_rate_limiter.is_blocked(ip):
+        return templates.TemplateResponse(
+            "login.html",
+            {
+                "request": request,
+                "title": APP_TITLE,
+                "error": "Слишком много попыток. Подождите 15 минут.",
+            },
+            status_code=429,
+        )
+
+    uname = normalize_login_username(username)
+    if not uname or not validate_password_length(password):
+        login_rate_limiter.record_failure(ip)
         return templates.TemplateResponse(
             "login.html",
             {
@@ -112,6 +172,20 @@ def login_submit(
             status_code=401,
         )
 
+    admin = db.query(AdminUser).filter(AdminUser.username == uname).first()
+    if not verify_login_password(password, admin.password_hash if admin else None):
+        login_rate_limiter.record_failure(ip)
+        return templates.TemplateResponse(
+            "login.html",
+            {
+                "request": request,
+                "title": APP_TITLE,
+                "error": "Неверный логин или пароль",
+            },
+            status_code=401,
+        )
+
+    login_rate_limiter.clear(ip)
     token = create_session_token(admin.id)
     resp = RedirectResponse("/dashboard", status_code=303)
     resp.set_cookie(
@@ -120,15 +194,17 @@ def login_submit(
         httponly=True,
         samesite="lax",
         max_age=SESSION_MAX_AGE,
-        secure=(request.url.scheme == "https"),
+        secure=_response_is_secure(request),
+        path="/",
     )
     return resp
 
 
 @app.post("/logout")
-def logout():
+def logout(request: Request, csrf_token: str = Form("")):
+    verify_csrf(request, csrf_token)
     resp = RedirectResponse("/login", status_code=303)
-    resp.delete_cookie(SESSION_COOKIE)
+    resp.delete_cookie(SESSION_COOKIE, path="/")
     return resp
 
 
@@ -208,6 +284,7 @@ def nodes_page(
 def nodes_set_local_country(
     admin: AdminUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
+    _: None = Depends(require_form_csrf),
     country: str = Form(...),
 ):
     country = country.strip()
@@ -225,6 +302,7 @@ def nodes_generate_agent(
     request: Request,
     admin: AdminUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
+    _: None = Depends(require_form_csrf),
     name: str = Form(...),
     country: str = Form(...),
     domain: str = Form(""),
@@ -318,6 +396,7 @@ async def proxy_create(
     request: Request,
     admin: AdminUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
+    _: None = Depends(require_form_csrf),
     node_id: int = Form(...),
     username: str = Form(...),
     wifi: str | None = Form(None),
@@ -443,6 +522,7 @@ async def proxy_delete(
     user_id: int,
     admin: AdminUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
+    _: None = Depends(require_form_csrf),
 ):
     pu = db.get(ProxyUser, user_id)
     if not pu:
@@ -526,6 +606,7 @@ def certs_page(
 async def certs_renew(
     admin: AdminUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
+    _: None = Depends(require_form_csrf),
     cert_name: str = Form(""),
 ):
     result = await asyncio.to_thread(renew_certificates, cert_name.strip() or None)
@@ -542,6 +623,7 @@ async def certs_renew(
 async def certs_reissue(
     admin: AdminUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
+    _: None = Depends(require_form_csrf),
     domain: str = Form(...),
     email: str = Form(""),
 ):
@@ -556,7 +638,10 @@ async def certs_reissue(
 
 
 @app.post("/certs/sync-hysteria")
-async def certs_sync_hysteria(admin: AdminUser = Depends(get_current_admin)):
+async def certs_sync_hysteria(
+    admin: AdminUser = Depends(get_current_admin),
+    _: None = Depends(require_form_csrf),
+):
     result = await asyncio.to_thread(sync_hysteria_from_le)
     if result.ok:
         return RedirectResponse(f"/certs?msg={result.message}", status_code=303)
@@ -567,6 +652,7 @@ async def certs_sync_hysteria(admin: AdminUser = Depends(get_current_admin)):
 def certs_settings(
     admin: AdminUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
+    _: None = Depends(require_form_csrf),
     auto_renew: str | None = Form(None),
     auto_renew_days: int = Form(3),
 ):
@@ -603,13 +689,14 @@ def profile_page(
 def profile_password(
     admin: AdminUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
+    _: None = Depends(require_form_csrf),
     current_password: str = Form(...),
     new_password: str = Form(...),
     new_password2: str = Form(...),
 ):
     if not verify_password(current_password, admin.password_hash):
         return RedirectResponse("/profile?err=Неверный текущий пароль", status_code=303)
-    if len(new_password) < 6:
+    if len(new_password) < 6 or not validate_password_length(new_password):
         return RedirectResponse("/profile?err=Новый пароль ≥ 6 символов", status_code=303)
     if new_password != new_password2:
         return RedirectResponse("/profile?err=Пароли не совпадают", status_code=303)
@@ -622,6 +709,7 @@ def profile_password(
 def profile_notifications(
     admin: AdminUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
+    _: None = Depends(require_form_csrf),
     telegram_bot_token: str = Form(""),
     telegram_chat_id: str = Form(""),
     notify_email: str = Form(""),
@@ -666,7 +754,7 @@ def _authorize_agent_api(request: Request, db: Session) -> None:
     if auth and auth.startswith("Bearer "):
         token = auth.removeprefix("Bearer ").strip()
     expected = os.environ.get("VLESS_PANEL_AGENT_TOKEN", "").strip()
-    if expected and token == expected:
+    if expected and token and secrets.compare_digest(token, expected):
         return
     if token and _node_by_agent_token(db, token):
         return

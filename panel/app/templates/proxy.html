@@ -11,6 +11,7 @@
   <div class="alert alert-error">{{ error }}</div>
   {% endif %}
   <form method="post" action="/proxy" id="proxy-form">
+    {% include "csrf_input.html" %}
     <label>1. Имя пользователя (латиница)</label>
     <input type="text" name="username" required placeholder="maks" autocomplete="off" minlength="1" maxlength="63">
 
@@ -58,6 +59,7 @@
         <td class="form-actions" style="margin:0">
           <a href="/proxy/{{ u.id }}" class="btn btn-cyan" style="padding:0.35rem 0.65rem;font-size:0.62rem">Ссылки</a>
           <form method="post" action="/proxy/{{ u.id }}/delete" style="display:inline" onsubmit="return confirm('Удалить конфиг {{ u.username }} на ноде?');">
+            {% include "csrf_input.html" %}
             <button type="submit" class="btn btn-red" style="padding:0.35rem 0.65rem;font-size:0.62rem">Удалить</button>
           </form>
         </td>

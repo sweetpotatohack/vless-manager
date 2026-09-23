@@ -24,6 +24,7 @@
       <a href="/profile" class="{% if request.url.path == '/profile' %}active{% endif %}"><span class="nav-dot"></span>Кабинет</a>
     </nav>
     <form action="/logout" method="post" class="logout-form">
+      {% include "csrf_input.html" %}
       <button type="submit" class="btn btn-red">Logout</button>
     </form>
   </aside>

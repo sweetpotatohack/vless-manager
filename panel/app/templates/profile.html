@@ -12,6 +12,7 @@
 <div class="card card-glow">
   <h3 class="card-title">Смена пароля</h3>
   <form method="post" action="/profile/password">
+    {% include "csrf_input.html" %}
     <label>Текущий пароль</label>
     <input type="password" name="current_password" required autocomplete="current-password">
     <label>Новый пароль</label>
@@ -25,6 +26,7 @@
 <div class="card">
   <h3 class="card-title">Оповещения (сертификаты / renew)</h3>
   <form method="post" action="/profile/notifications">
+    {% include "csrf_input.html" %}
     <label>Telegram Bot Token</label>
     <input type="text" name="telegram_bot_token" value="{{ settings.telegram_bot_token }}" placeholder="123456:ABC...">
     <label>Telegram Chat ID</label>

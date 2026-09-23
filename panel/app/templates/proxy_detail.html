@@ -41,6 +41,7 @@
 <div class="form-actions">
   <a href="/proxy" class="btn btn-cyan">← К списку</a>
   <form method="post" action="/proxy/{{ user.id }}/delete" onsubmit="return confirm('Удалить конфиг {{ user.username }}? Wi‑Fi и LTE на сервере будут сняты.');">
+    {% include "csrf_input.html" %}
     <button type="submit" class="btn btn-red">Удалить конфиг</button>
   </form>
 </div>

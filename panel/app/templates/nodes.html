@@ -19,6 +19,7 @@
 <div class="card">
   <h3 style="margin-top:0">Страна master-ноды (для Proxy)</h3>
   <form method="post" action="/nodes/local-country" class="form-narrow">
+    {% include "csrf_input.html" %}
     <label>Как показывать страну выхода для этого сервера</label>
     <input type="text" name="country" required placeholder="Germany (EU)" value="{{ local_country or '' }}">
     <button type="submit" class="btn btn-blue">Сохранить</button>
@@ -28,6 +29,7 @@
 <div class="card">
   <h3 style="margin-top:0">Сгенерировать агент (новая нода)</h3>
   <form method="post" action="/nodes/generate-agent">
+    {% include "csrf_input.html" %}
     <label>Название ноды</label>
     <input type="text" name="name" required placeholder="frankfurt-1">
     <label>Страна (для выбора в Proxy)</label>
