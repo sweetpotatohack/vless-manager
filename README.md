@@ -22,6 +22,12 @@
 
 ![Обзор панели — ноды и клиенты](docs/screenshots/dashboard.png)
 
+### Мониторинг нод (CPU / RAM / диск)
+
+Компактные датчики на master: отдельная карточка на каждую ноду (master + agent), обновление каждые 5 с.
+
+![Мониторинг нод — датчики на Обзоре](docs/screenshots/node-monitoring.png)
+
 ### Proxy — выдача конфигов
 
 ![Proxy — новый пользователь и список клиентов](docs/screenshots/proxy.png)
