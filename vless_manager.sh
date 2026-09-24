@@ -2108,7 +2108,7 @@ main_menu() {
                 ;;
             10)
                 echo -e "${CYAN}📱 REALITY :443 + Hysteria2 (LTE, kibervpn)${NC}"
-                echo -n "Введи имя клиента (например akuma0xdead-mob): "
+                echo -n "Введи имя клиента (например testuser-mob): "
                 read -r client_name
                 if [[ -n "$client_name" ]]; then
                     create_mobile_vless_config "$client_name"
