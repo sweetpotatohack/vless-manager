@@ -6,6 +6,40 @@
 
 ---
 
+## Web-панель (скриншоты)
+
+Обезличенные кадры интерфейса **VLESSPRO** на master: HTTPS `:8765`, тёмная тема, единый вход для всех нод.
+
+| Раздел | Описание |
+|--------|----------|
+| **Обзор** | Сводка по нодам и клиентам, быстрый переход к выдаче конфигов |
+| **Proxy** | Создание пользователя, выбор ноды (master / agent), список клиентов |
+| **Ноды** | Master + remote agent, DNS VPN, порты firewall, install.sh |
+| **Сертификаты** | Let's Encrypt, autoprenew, Hysteria2, certbot timer |
+| **Кабинет** | Пароль admin, Telegram / SMTP оповещения |
+
+### Обзор
+
+![Обзор панели — ноды и клиенты](docs/screenshots/dashboard.png)
+
+### Proxy — выдача конфигов
+
+![Proxy — новый пользователь и список клиентов](docs/screenshots/proxy.png)
+
+### Ноды и agent
+
+![Ноды — master, agent, порты на agent-ноде](docs/screenshots/nodes.png)
+
+### Сертификаты
+
+![Сертификаты — LE, autoprenew, Hysteria2](docs/screenshots/certs.png)
+
+### Кабинет
+
+![Кабинет — пароль и оповещения](docs/screenshots/profile.png)
+
+---
+
 ## Быстрый старт (master-сервер)
 
 ### Что нужно заранее
