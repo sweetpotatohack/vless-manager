@@ -188,21 +188,21 @@ journalctl -u vless-panel -u vless-xray -f
 
 #### 2. Скопируйте install-команду
 
-Пример (подставьте свой домен master и token из панели):
+Пример (URL master из панели **Ноды** → install-команда; подставьте свой домен и token):
 
 ```bash
 curl -fsSL 'https://vpn.example.com:8765/api/v1/agent/install.sh?token=ВАШ_TOKEN' | bash
 ```
 
-Используйте **HTTPS** URL master, если LE на master настроен. Token одноразово привязан к записи ноды в БД.
+Используйте **HTTPS** URL master (домен из Let's Encrypt на master), не чужой хост из документации. Token одноразово привязан к записи ноды в БД.
 
 Альтернатива: **Ноды** → скачать `install.sh` для конкретной ноды (если доступна кнопка/ссылка).
 
 #### 3. На новом VPS (agent)
 
 ```bash
-# от root
-curl -fsSL 'https://MASTER:8765/api/v1/agent/install.sh?token=TOKEN' | bash
+# от root — MASTER = ваш домен панели (как в tls.env), TOKEN из блока «Ноды»
+curl -fsSL 'https://vpn.example.com:8765/api/v1/agent/install.sh?token=TOKEN' | bash
 ```
 
 Скрипт:
