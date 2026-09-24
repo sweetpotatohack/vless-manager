@@ -23,40 +23,15 @@
 </div>
 
 {% if not is_agent %}
-{% macro metric_bar(label, pct) %}
-<div class="metric-row">
-  <div class="metric-row-head">
-    <span>{{ label }}</span>
-    <span class="metric-pct">{% if pct is not none %}{{ '%.1f'|format(pct) }}%{% else %}—{% endif %}</span>
+<div class="card metrics-card">
+  <div class="metrics-card-head">
+    <h3 style="margin:0">Мониторинг нод</h3>
+    <span class="metrics-live-dot" id="metrics-live-dot" title="Обновление"></span>
+    <span class="metrics-updated" id="metrics-updated">—</span>
   </div>
-  <div class="metric-bar">
-    <div class="metric-bar-fill lv-{{ metric_level(pct) }}" style="width:{{ pct if pct is not none else 0 }}%"></div>
-  </div>
-</div>
-{% endmacro %}
-<div class="card">
-  <h3 style="margin-top:0">Загрузка нод</h3>
-  <p class="hint" style="margin-top:0">CPU, RAM и диск по каждой ноде. Master обновляется локально; agent — раз в ~20 с через heartbeat.</p>
+  <p class="hint metrics-hint">CPU · RAM · диск в стиле btop. Master — локально каждые 15 с; agent — heartbeat ~20 с.</p>
   <div class="node-metrics-grid" id="node-metrics-grid">
-    {% for n in nodes %}
-    <article class="node-monitor" data-node-id="{{ n.id }}">
-      <header class="node-monitor-head">
-        <div>
-          <strong>{{ n.name or node_role_display(n) }}</strong>
-          {% if n.role == 'remote' and n.agent_status != 'online' %}
-          <span class="badge badge-bad">{{ n.agent_status }}</span>
-          {% endif %}
-          {% if metrics_stale(n) and (n.metric_cpu is not none or n.role == 'remote') %}
-          <span class="badge badge-warn">устарело</span>
-          {% endif %}
-        </div>
-        <div class="node-monitor-meta">{{ node_region_display(n) }} · {{ node_role_display(n) }}</div>
-      </header>
-      {{ metric_bar('CPU', n.metric_cpu) }}
-      {{ metric_bar('RAM', n.metric_mem) }}
-      {{ metric_bar('Диск', n.metric_disk) }}
-    </article>
-    {% endfor %}
+    <div class="metrics-placeholder">Загрузка метрик…</div>
   </div>
 </div>
 {% endif %}

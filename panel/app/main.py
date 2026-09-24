@@ -58,11 +58,12 @@ from app.services.settings import get_settings
 from app.services.master_sync import master_unregister_proxy_user
 from app.services.master_url import get_master_public_url
 from app.services.host_metrics import (
+    apply_node_metrics,
     metric_level,
+    metrics_missing,
     metrics_stale,
     persist_local_node_metrics,
     refresh_local_node_metrics,
-    apply_node_metrics,
 )
 from app.services.nodes_helpers import (
     apply_agent_public_ip,
@@ -102,6 +103,7 @@ templates.env.globals["node_region_display"] = node_region_display
 templates.env.globals["node_role_display"] = node_role_display
 templates.env.globals["metric_level"] = metric_level
 templates.env.globals["metrics_stale"] = metrics_stale
+templates.env.globals["metrics_missing"] = metrics_missing
 
 app = FastAPI(title=APP_TITLE)
 app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
@@ -162,8 +164,9 @@ async def on_startup():
 async def _local_metrics_worker() -> None:
     if is_agent_panel():
         return
+    await asyncio.to_thread(persist_local_node_metrics)
     while True:
-        await asyncio.sleep(30)
+        await asyncio.sleep(15)
         await asyncio.to_thread(persist_local_node_metrics)
 
 
@@ -296,6 +299,34 @@ def dashboard(
     )
 
 
+def _node_metrics_api_row(n: Node, live_local=None) -> dict:
+    row = {
+        "id": n.id,
+        "name": n.name or node_role_display(n),
+        "role": node_role_display(n),
+        "country": node_region_display(n),
+        "agent_status": n.agent_status,
+        "cpu": n.metric_cpu,
+        "mem": n.metric_mem,
+        "disk": n.metric_disk,
+        "metrics_at": n.metrics_at.isoformat() + "Z" if n.metrics_at else None,
+        "stale": metrics_stale(n),
+        "missing": metrics_missing(n),
+        "load_1": None,
+        "mem_label": None,
+        "disk_label": None,
+    }
+    if n.role == "local" and live_local is not None:
+        row["load_1"] = live_local.load_1
+        row["mem_label"] = (
+            f"{live_local.mem_used_mb / 1024:.1f} / {live_local.mem_total_mb / 1024:.1f} GiB"
+        )
+        row["disk_label"] = (
+            f"{live_local.disk_used_gb:.0f} / {live_local.disk_total_gb:.0f} GiB"
+        )
+    return row
+
+
 @app.get("/api/v1/dashboard/node-metrics")
 def api_dashboard_node_metrics(
     admin: AdminUser = Depends(get_current_admin),
@@ -303,28 +334,13 @@ def api_dashboard_node_metrics(
 ):
     if is_agent_panel():
         raise HTTPException(404, "Not available on agent panel")
+    live_local = None
     try:
-        refresh_local_node_metrics(db)
+        live_local = refresh_local_node_metrics(db)
     except Exception:
         db.rollback()
     nodes = db.query(Node).filter(Node.is_active.is_(True)).order_by(Node.name).all()
-    out = []
-    for n in nodes:
-        out.append(
-            {
-                "id": n.id,
-                "name": n.name,
-                "role": node_role_display(n),
-                "country": node_region_display(n),
-                "agent_status": n.agent_status,
-                "cpu": n.metric_cpu,
-                "mem": n.metric_mem,
-                "disk": n.metric_disk,
-                "metrics_at": n.metrics_at.isoformat() + "Z" if n.metrics_at else None,
-                "stale": metrics_stale(n),
-            }
-        )
-    return {"nodes": out}
+    return {"nodes": [_node_metrics_api_row(n, live_local) for n in nodes]}
 
 
 def _node_by_agent_token(db: Session, token: str) -> Node | None:
