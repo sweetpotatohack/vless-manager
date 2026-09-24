@@ -9,6 +9,7 @@ from pathlib import Path
 import httpx
 
 from app.services.provision import delete_local_client, provision_local
+from app.services.public_ip import detect_egress_public_ip
 
 log = logging.getLogger("vless-agent-worker")
 PANEL_DATA = Path("/etc/vless-manager/panel")
@@ -108,9 +109,19 @@ async def agent_job_worker_loop() -> None:
         return
     headers = {"Authorization": f"Bearer {token}"}
     log.info("agent worker: polling %s for jobs", master)
+    ticks = 0
     while True:
         try:
             async with httpx.AsyncClient(timeout=60.0, verify=True) as client:
+                ticks += 1
+                if ticks == 1 or ticks % 30 == 0:
+                    pub = await asyncio.to_thread(detect_egress_public_ip)
+                    if pub:
+                        await client.post(
+                            f"{master}/api/v1/agent/heartbeat",
+                            headers=headers,
+                            json={"public_ip": pub},
+                        )
                 resp = await client.get(f"{master}/api/v1/agent/next-job", headers=headers)
                 if resp.status_code == 204:
                     await asyncio.sleep(2.0)

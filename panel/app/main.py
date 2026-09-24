@@ -57,7 +57,12 @@ from app.services.certs import all_cert_status
 from app.services.settings import get_settings
 from app.services.master_sync import master_unregister_proxy_user
 from app.services.master_url import get_master_public_url
-from app.services.nodes_helpers import node_region_display, node_role_display, node_vpn_host
+from app.services.nodes_helpers import (
+    apply_agent_public_ip,
+    node_region_display,
+    node_role_display,
+    node_vpn_host,
+)
 from app.services.ports import port_status
 from app.services.provision import (
     ProvisionResult,
@@ -1219,7 +1224,7 @@ async def api_nodes_register(request: Request, db: Session = Depends(get_db)):
     node = _node_by_agent_token(db, token)
     if not node:
         raise HTTPException(404, "Unknown token")
-    node.public_ip = (body.get("public_ip") or node.public_ip or "").strip()
+    apply_agent_public_ip(node, (body.get("public_ip") or "").strip())
     incoming_domain = (body.get("domain") or "").strip()
     if incoming_domain:
         placeholder = f"{node.slug}.local"
@@ -1242,6 +1247,20 @@ async def api_nodes_register(request: Request, db: Session = Depends(get_db)):
         "name": node.name,
         "vpn_domain": node.domain,
     }
+
+
+@app.post("/api/v1/agent/heartbeat")
+async def api_agent_heartbeat(request: Request, db: Session = Depends(get_db)):
+    node = _agent_node_from_request(request, db)
+    if not node:
+        raise HTTPException(403, "Invalid agent token")
+    body = await request.json()
+    apply_agent_public_ip(node, (body.get("public_ip") or "").strip())
+    node.last_seen = datetime.utcnow()
+    if node.agent_status != "online":
+        node.agent_status = "online"
+    db.commit()
+    return {"ok": True, "public_ip": node.public_ip}
 
 
 @app.get("/api/v1/agent/node-config")

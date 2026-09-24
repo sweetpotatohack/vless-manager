@@ -56,7 +56,7 @@
       <tr><td><code>80/tcp</code></td><td>Let's Encrypt (certbot), если выпускаете LE на agent</td></tr>
     </tbody>
   </table>
-  <p class="hint">С master до agent по LAN IP ходить не нужно: конфиги создаются через очередь (agent → master). Клиентам VPN нужны DNS ноды и открытые порты выше.</p>
+  <p class="hint">С master до agent по LAN IP ходить не нужно: конфиги создаются через очередь (agent → master). IP в таблице — белый egress (ident.me / ipify), обновляется при register и heartbeat agent. Клиентам VPN нужен DNS ноды и порты выше.</p>
 </div>
 
 <div class="card">
@@ -66,7 +66,7 @@
       <tr>
         <th>Имя</th>
         <th>Страна</th>
-        <th>IP</th>
+        <th>IP (egress)</th>
         <th>Домен</th>
         <th>Статус</th>
         <th>Роль</th>

@@ -57,16 +57,26 @@ else
 fi
 
 LOCAL_IP="$(hostname -I 2>/dev/null | awk '{{for(i=1;i<=NF;i++) if($i!~/^127\\./) {{print $i; exit}}}}')"
-PUBLIC_IP="$(curl -4 -fsS --max-time 10 https://api.ipify.org 2>/dev/null || curl -4 -fsS --max-time 10 https://ifconfig.me/ip 2>/dev/null || true)"
-PUBLIC_IP="${{VLESS_AGENT_PUBLIC_IP:-${{PUBLIC_IP:-$LOCAL_IP}}}}"
-MASTER_HOST="${{MASTER#https://}}"; MASTER_HOST="${{MASTER_HOST#http://}}"; MASTER_HOST="${{MASTER_HOST%%:*}}"
-MASTER_IP="$(getent ahostsv4 "$MASTER_HOST" 2>/dev/null | awk '{{print $1; exit}}' || true)"
-REPORT_IP="$PUBLIC_IP"
-if [[ -n "$MASTER_IP" && "$PUBLIC_IP" == "$MASTER_IP" && -n "$LOCAL_IP" ]]; then
-  REPORT_IP="$LOCAL_IP"
+fetch_public_ip() {{
+  local url ip
+  for url in "https://ident.me" "https://api.ipify.org" "https://ifconfig.me/ip" "https://icanhazip.com"; do
+    ip="$(curl -4 -fsSk --max-time 12 "$url" 2>/dev/null | tr -d '\\r\\n ')"
+    if [[ "$ip" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$ ]]; then
+      echo "$ip"
+      return 0
+    fi
+  done
+  return 1
+}}
+PUBLIC_IP="$(fetch_public_ip 2>/dev/null || true)"
+PUBLIC_IP="${{VLESS_AGENT_PUBLIC_IP:-$PUBLIC_IP}}"
+if [[ -n "$PUBLIC_IP" ]]; then
+  REPORT_IP="$PUBLIC_IP"
+else
+  REPORT_IP="${{LOCAL_IP:-127.0.0.1}}"
 fi
-API_HOST="${{VLESS_AGENT_API_HOST:-${{PUBLIC_IP:-$LOCAL_IP}}}}"
-API_BASE="http://${{API_HOST}}:8765"
+API_BASE="http://${{LOCAL_IP:-127.0.0.1}}:8765"
+echo "Публичный IP (egress): ${{REPORT_IP:-?}} · LAN: ${{LOCAL_IP:-—}}"
 
 echo "Регистрация на master..."
 REG_BODY="{{\\"token\\":\\"$NODE_TOKEN\\",\\"public_ip\\":\\"$REPORT_IP\\",\\"api_base\\":\\"$API_BASE\\"}}"
