@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -49,6 +49,10 @@ class Node(Base):
     public_ip: Mapped[str] = mapped_column(String(45), default="")
     agent_status: Mapped[str] = mapped_column(String(16), default="pending")
     last_seen: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    metric_cpu: Mapped[float | None] = mapped_column(Float, nullable=True)
+    metric_mem: Mapped[float | None] = mapped_column(Float, nullable=True)
+    metric_disk: Mapped[float | None] = mapped_column(Float, nullable=True)
+    metrics_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     role: Mapped[str] = mapped_column(String(16), default="local")
     api_base: Mapped[str | None] = mapped_column(String(512), nullable=True)
     api_token: Mapped[str | None] = mapped_column(String(128), nullable=True)

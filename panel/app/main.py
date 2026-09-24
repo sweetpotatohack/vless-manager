@@ -57,6 +57,13 @@ from app.services.certs import all_cert_status
 from app.services.settings import get_settings
 from app.services.master_sync import master_unregister_proxy_user
 from app.services.master_url import get_master_public_url
+from app.services.host_metrics import (
+    metric_level,
+    metrics_stale,
+    persist_local_node_metrics,
+    refresh_local_node_metrics,
+    apply_node_metrics,
+)
 from app.services.nodes_helpers import (
     apply_agent_public_ip,
     node_region_display,
@@ -93,6 +100,8 @@ templates.env.autoescape = True
 templates.env.globals["node_vpn_host"] = node_vpn_host
 templates.env.globals["node_region_display"] = node_region_display
 templates.env.globals["node_role_display"] = node_role_display
+templates.env.globals["metric_level"] = metric_level
+templates.env.globals["metrics_stale"] = metrics_stale
 
 app = FastAPI(title=APP_TITLE)
 app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
@@ -147,6 +156,15 @@ async def on_startup():
     reconcile_wifi_servers()
     asyncio.create_task(cert_autorenew_worker())
     start_agent_job_worker()
+    asyncio.create_task(_local_metrics_worker())
+
+
+async def _local_metrics_worker() -> None:
+    if is_agent_panel():
+        return
+    while True:
+        await asyncio.sleep(30)
+        await asyncio.to_thread(persist_local_node_metrics)
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -242,6 +260,11 @@ def dashboard(
     admin: AdminUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
+    if not is_agent_panel():
+        try:
+            refresh_local_node_metrics(db)
+        except Exception:
+            db.rollback()
     nodes = db.query(Node).filter(Node.is_active.is_(True)).order_by(Node.name).all()
     master_url = get_master_public_url(request)
     if is_agent_panel():
@@ -271,6 +294,37 @@ def dashboard(
             "master_proxy_url": f"{master_url.rstrip('/')}/proxy",
         },
     )
+
+
+@app.get("/api/v1/dashboard/node-metrics")
+def api_dashboard_node_metrics(
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    if is_agent_panel():
+        raise HTTPException(404, "Not available on agent panel")
+    try:
+        refresh_local_node_metrics(db)
+    except Exception:
+        db.rollback()
+    nodes = db.query(Node).filter(Node.is_active.is_(True)).order_by(Node.name).all()
+    out = []
+    for n in nodes:
+        out.append(
+            {
+                "id": n.id,
+                "name": n.name,
+                "role": node_role_display(n),
+                "country": node_region_display(n),
+                "agent_status": n.agent_status,
+                "cpu": n.metric_cpu,
+                "mem": n.metric_mem,
+                "disk": n.metric_disk,
+                "metrics_at": n.metrics_at.isoformat() + "Z" if n.metrics_at else None,
+                "stale": metrics_stale(n),
+            }
+        )
+    return {"nodes": out}
 
 
 def _node_by_agent_token(db: Session, token: str) -> Node | None:
@@ -1256,6 +1310,7 @@ async def api_agent_heartbeat(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(403, "Invalid agent token")
     body = await request.json()
     apply_agent_public_ip(node, (body.get("public_ip") or "").strip())
+    apply_node_metrics(node, body)
     node.last_seen = datetime.utcnow()
     if node.agent_status != "online":
         node.agent_status = "online"

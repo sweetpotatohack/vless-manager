@@ -18,6 +18,10 @@ def run_migrations() -> None:
         _add_column(conn, "nodes", "public_ip", "public_ip VARCHAR(45) DEFAULT ''")
         _add_column(conn, "nodes", "agent_status", "agent_status VARCHAR(16) DEFAULT 'online'")
         _add_column(conn, "nodes", "last_seen", "last_seen DATETIME")
+        _add_column(conn, "nodes", "metric_cpu", "metric_cpu REAL")
+        _add_column(conn, "nodes", "metric_mem", "metric_mem REAL")
+        _add_column(conn, "nodes", "metric_disk", "metric_disk REAL")
+        _add_column(conn, "nodes", "metrics_at", "metrics_at DATETIME")
         _add_column(conn, "proxy_users", "exit_country", "exit_country VARCHAR(128) DEFAULT ''")
         _add_column(conn, "proxy_users", "exit_ip", "exit_ip VARCHAR(45) DEFAULT ''")
         try:
