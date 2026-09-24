@@ -4,22 +4,13 @@
   const liveDot = document.getElementById("metrics-live-dot");
   if (!grid) return;
 
-  const history = {};
-  const HISTORY_LEN = 36;
+  const ARC_LEN = 75.4;
 
   function level(pct) {
     if (pct == null || Number.isNaN(pct)) return "none";
     if (pct >= 90) return "bad";
     if (pct >= 75) return "warn";
     return "ok";
-  }
-
-  function pushHistory(id, key, val) {
-    if (!history[id]) history[id] = { cpu: [], mem: [], disk: [] };
-    const arr = history[id][key];
-    if (val == null || Number.isNaN(val)) return;
-    arr.push(val);
-    while (arr.length > HISTORY_LEN) arr.shift();
   }
 
   function escapeHtml(s) {
@@ -31,147 +22,68 @@
 
   function fmtPct(pct) {
     if (pct == null || Number.isNaN(pct)) return "—";
-    return pct.toFixed(1);
+    return pct.toFixed(1) + "%";
   }
 
-  function sparkSvg(id, key) {
-    const arr = (history[id] && history[id][key]) || [];
-    const w = 120;
-    const h = 28;
-    if (arr.length < 2) {
-      return (
-        '<svg class="spark" viewBox="0 0 ' +
-        w +
-        " " +
-        h +
-        '" preserveAspectRatio="none"><path class="spark-idle" d="M0,' +
-        (h / 2) +
-        " L" +
-        w +
-        "," +
-        (h / 2) +
-        '"/></svg>'
-      );
-    }
-    const step = w / (HISTORY_LEN - 1);
-    const start = HISTORY_LEN - arr.length;
-    let d = "";
-    arr.forEach(function (v, i) {
-      const x = (start + i) * step;
-      const y = h - (Math.min(100, Math.max(0, v)) / 100) * (h - 4) - 2;
-      d += (i === 0 ? "M" : " L") + x.toFixed(1) + "," + y.toFixed(1);
-    });
-    return (
-      '<svg class="spark lv-' +
-      level(arr[arr.length - 1]) +
-      '" viewBox="0 0 ' +
-      w +
-      " " +
-      h +
-      '" preserveAspectRatio="none"><path d="' +
-      d +
-      '"/></svg>'
-    );
-  }
-
-  function blocks(pct) {
-    const n = 12;
-    const filled = pct == null ? 0 : Math.round((Math.min(100, Math.max(0, pct)) / 100) * n);
-    let html = '<div class="seg-bar">';
-    for (let i = 0; i < n; i++) {
-      const on = i < filled;
-      const lv = level(pct);
-      html += '<span class="seg' + (on ? " on lv-" + lv : "") + '"></span>';
-    }
-    html += "</div>";
-    return html;
-  }
-
-  function ring(label, pct, sub) {
+  /** Zabbix-style half gauge (fixed 88×48 px) */
+  function gauge(label, pct) {
     const lv = level(pct);
-    const off = pct == null ? 100 : 100 - Math.min(100, Math.max(0, pct));
-    const subHtml = sub ? '<span class="ring-sub">' + escapeHtml(sub) + "</span>" : "";
+    const p = pct == null ? 0 : Math.min(100, Math.max(0, pct));
+    const off = ARC_LEN * (1 - p / 100);
     return (
-      '<div class="ring-wrap lv-' +
+      '<div class="z-gauge lv-' +
       lv +
+      '" title="' +
+      escapeHtml(label) +
+      ": " +
+      fmtPct(pct) +
       '">' +
-      '<svg class="ring" viewBox="0 0 42 42">' +
-      '<circle class="ring-track" cx="21" cy="21" r="15.9" />' +
-      '<circle class="ring-fill" cx="21" cy="21" r="15.9" stroke-dasharray="100 100" stroke-dashoffset="' +
-      off +
+      '<svg viewBox="0 0 64 40" width="88" height="48" aria-hidden="true">' +
+      '<path class="z-gauge-track" d="M6 34 A26 26 0 0 1 58 34" pathLength="' +
+      ARC_LEN +
+      '" />' +
+      '<path class="z-gauge-fill" d="M6 34 A26 26 0 0 1 58 34" pathLength="' +
+      ARC_LEN +
+      '" stroke-dasharray="' +
+      ARC_LEN +
+      '" stroke-dashoffset="' +
+      off.toFixed(2) +
       '" />' +
       "</svg>" +
-      '<div class="ring-center">' +
-      '<span class="ring-val">' +
+      '<div class="z-gauge-val">' +
       fmtPct(pct) +
-      "</span>" +
-      '<span class="ring-unit">%</span></div>' +
-      '<div class="ring-label">' +
-      escapeHtml(label) +
       "</div>" +
-      subHtml +
-      "</div>"
+      '<div class="z-gauge-lbl">' +
+      escapeHtml(label) +
+      "</div></div>"
     );
-  }
-
-  function statusBadges(n) {
-    let b = "";
-    if (n.role === "agent" && n.agent_status && n.agent_status !== "online") {
-      b += '<span class="badge badge-bad">' + escapeHtml(n.agent_status) + "</span> ";
-    }
-    if (n.missing) {
-      b += '<span class="badge badge-muted">нет данных</span> ';
-    } else if (n.stale) {
-      b += '<span class="badge badge-warn">устарело</span> ';
-    } else {
-      b += '<span class="badge badge-ok">live</span> ';
-    }
-    return b;
   }
 
   function renderNode(n) {
-    pushHistory(n.id, "cpu", n.cpu);
-    pushHistory(n.id, "mem", n.mem);
-    pushHistory(n.id, "disk", n.disk);
-
-    const load =
-      n.load_1 != null ? '<span class="load-tag">load ' + n.load_1.toFixed(2) + "</span>" : "";
+    let dot = "z-dot-off";
+    if (!n.missing && !n.stale) dot = "z-dot-live";
+    else if (n.stale) dot = "z-dot-warn";
 
     return (
-      '<article class="node-monitor" data-node-id="' +
+      '<article class="node-tile" data-node-id="' +
       n.id +
       '">' +
-      '<header class="node-monitor-head">' +
-      '<div class="node-title-row">' +
+      '<div class="node-tile-head">' +
+      '<span class="z-dot ' +
+      dot +
+      '"></span>' +
       "<strong>" +
       escapeHtml(n.name) +
-      "</strong> " +
-      statusBadges(n) +
-      load +
-      "</div>" +
-      '<div class="node-monitor-meta">' +
+      "</strong>" +
+      '<span class="node-tile-meta">' +
       escapeHtml(n.country) +
       " · " +
       escapeHtml(n.role) +
-      "</div></header>" +
-      '<div class="rings-row">' +
-      ring("CPU", n.cpu, null) +
-      ring("RAM", n.mem, n.mem_label) +
-      ring("DISK", n.disk, n.disk_label) +
-      "</div>" +
-      '<div class="spark-panel">' +
-      '<div class="spark-row"><span>CPU</span>' +
-      sparkSvg(n.id, "cpu") +
-      blocks(n.cpu) +
-      "</div>" +
-      '<div class="spark-row"><span>RAM</span>' +
-      sparkSvg(n.id, "mem") +
-      blocks(n.mem) +
-      "</div>" +
-      '<div class="spark-row"><span>DISK</span>' +
-      sparkSvg(n.id, "disk") +
-      blocks(n.disk) +
-      "</div>" +
+      "</span></div>" +
+      '<div class="node-tile-gauges">' +
+      gauge("CPU", n.cpu) +
+      gauge("RAM", n.mem) +
+      gauge("DISK", n.disk) +
       "</div></article>"
     );
   }
@@ -203,7 +115,8 @@
       if (updatedEl) {
         const t = new Date();
         updatedEl.textContent =
-          "обновлено " + t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+          "обновлено " +
+          t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
       }
     } catch (_e) {
       setLive(false);
