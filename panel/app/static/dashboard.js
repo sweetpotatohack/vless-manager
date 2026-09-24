@@ -4,7 +4,12 @@
   const liveDot = document.getElementById("metrics-live-dot");
   if (!grid) return;
 
-  const ARC_LEN = 75.4;
+  const COLORS = {
+    ok: "#22d3ee",
+    warn: "#fbbf24",
+    bad: "#f87171",
+    none: "#475569",
+  };
 
   function level(pct) {
     if (pct == null || Number.isNaN(pct)) return "none";
@@ -25,35 +30,27 @@
     return pct.toFixed(1) + "%";
   }
 
-  /** Zabbix-style half gauge (fixed 88×48 px) */
+  /** Полукруг на CSS (без SVG — не ломается от масштаба) */
   function gauge(label, pct) {
     const lv = level(pct);
     const p = pct == null ? 0 : Math.min(100, Math.max(0, pct));
-    const off = ARC_LEN * (1 - p / 100);
+    const color = COLORS[lv];
     return (
-      '<div class="z-gauge lv-' +
+      '<div class="arc-gauge lv-' +
       lv +
-      '" title="' +
-      escapeHtml(label) +
-      ": " +
-      fmtPct(pct) +
+      '" style="--pct:' +
+      p +
+      ";--gauge-color:" +
+      color +
       '">' +
-      '<svg viewBox="0 0 64 40" width="88" height="48" aria-hidden="true">' +
-      '<path class="z-gauge-track" d="M6 34 A26 26 0 0 1 58 34" pathLength="' +
-      ARC_LEN +
-      '" />' +
-      '<path class="z-gauge-fill" d="M6 34 A26 26 0 0 1 58 34" pathLength="' +
-      ARC_LEN +
-      '" stroke-dasharray="' +
-      ARC_LEN +
-      '" stroke-dashoffset="' +
-      off.toFixed(2) +
-      '" />' +
-      "</svg>" +
-      '<div class="z-gauge-val">' +
+      '<div class="arc-gauge-shell" aria-hidden="true">' +
+      '<div class="arc-gauge-fill"></div>' +
+      '<div class="arc-gauge-track"></div>' +
+      "</div>" +
+      '<div class="arc-gauge-val">' +
       fmtPct(pct) +
       "</div>" +
-      '<div class="z-gauge-lbl">' +
+      '<div class="arc-gauge-lbl">' +
       escapeHtml(label) +
       "</div></div>"
     );
@@ -68,18 +65,19 @@
       '<article class="node-tile" data-node-id="' +
       n.id +
       '">' +
-      '<div class="node-tile-head">' +
+      '<header class="node-tile-head">' +
+      '<div class="node-tile-title">' +
       '<span class="z-dot ' +
       dot +
-      '"></span>' +
+      '" title="Статус метрик"></span>' +
       "<strong>" +
       escapeHtml(n.name) +
-      "</strong>" +
-      '<span class="node-tile-meta">' +
+      "</strong></div>" +
+      '<div class="node-tile-meta">' +
       escapeHtml(n.country) +
       " · " +
       escapeHtml(n.role) +
-      "</span></div>" +
+      "</div></header>" +
       '<div class="node-tile-gauges">' +
       gauge("CPU", n.cpu) +
       gauge("RAM", n.mem) +
