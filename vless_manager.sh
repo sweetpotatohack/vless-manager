@@ -344,7 +344,7 @@ build_hysteria_url() {
     local client_name="$1" host
     load_hysteria_env
     host=$(get_public_host)
-    echo "hy2://${HY2_PASS}@${host}:${HYSTERIA_PORT}?sni=${host}#${client_name}-hy2"
+    echo "hysteria2://${HY2_PASS}@${host}:${HYSTERIA_PORT}?sni=${host}#${client_name}-hy2"
 }
 
 # Отдельный inbound REALITY :443 → /etc/xray-reality/config.json (как kibervpn)
@@ -473,15 +473,19 @@ auth:
   type: password
   password: ${HY2_PASS}
 
+ignoreClientBandwidth: true
+
 masquerade:
   type: proxy
   proxy:
-    url: https://${public_host}
+    url: https://www.cloudflare.com/cdn-cgi/trace
     rewriteHost: true
 
-bandwidth:
-  up: 1 gbps
-  down: 1 gbps
+quic:
+  initStreamReceiveWindow: 8388608
+  maxStreamReceiveWindow: 8388608
+  initConnReceiveWindow: 20971520
+  maxConnReceiveWindow: 20971520
 EOF
     cat > /etc/systemd/system/hysteria-server.service << 'UNIT'
 [Unit]
@@ -2184,8 +2188,12 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                 delete_vless_client "$name" "$wifi_flag" "$mobile_flag"
                 exit $?
                 ;;
+            refresh-hysteria)
+                setup_hysteria_mobile
+                exit $?
+                ;;
             set-public-host)
-                [[ -n "$name" ]] || { echo "usage: cli set-public-host DOMAIN" >&2; exit 2; }
+                [[ -n "$name" ]] || { echo "usage: cli set-public-host NAME" >&2; exit 2; }
                 umask 077
                 mkdir -p "$CONFIG_DIR"
                 if [[ -f "$TLS_ENV" ]]; then
