@@ -11,20 +11,24 @@
   DNS <strong>{{ node_vpn_host(node) or user.exit_ip }}</strong>
 </p>
 
-{% if user.hysteria_url %}
+{% if user.mobile_vless_url %}
 <div class="card">
-  <h3 style="margin-top:0">★ LTE — Hysteria2 (основной)</h3>
-  <div class="url-box">{{ user.hysteria_url }}</div>
+  <h3 style="margin-top:0">★ LTE — VLESS REALITY :443 (основной)</h3>
+  <p class="hint" style="margin-top:0">v2rayTun / аналог: Private DNS и MUX выключить. Импортируйте этот профиль на мобильном интернете.</p>
+  <div class="url-box">{{ user.mobile_vless_url }}</div>
   {% if qr_mobile %}
-  <div class="qr-row"><img src="/qr/{{ qr_mobile }}" alt="QR Hysteria / VLESS"></div>
+  <div class="qr-row"><img src="/qr/{{ qr_mobile }}" alt="QR REALITY LTE"></div>
   {% endif %}
 </div>
 {% endif %}
 
-{% if user.mobile_vless_url %}
+{% if user.hysteria_url %}
 <div class="card">
-  <h3 style="margin-top:0">LTE запасной — VLESS REALITY :443</h3>
-  <div class="url-box">{{ user.mobile_vless_url }}</div>
+  <h3 style="margin-top:0">LTE запасной — Hysteria2 UDP :25001</h3>
+  <div class="url-box">{{ user.hysteria_url }}</div>
+  {% if qr_hy2 %}
+  <div class="qr-row"><img src="/qr/{{ qr_hy2 }}" alt="QR Hysteria2"></div>
+  {% endif %}
 </div>
 {% endif %}
 

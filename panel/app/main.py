@@ -836,6 +836,7 @@ def proxy_detail(
     )
     qr_wifi = qr_png_path(pu.username, "wifi")
     qr_mobile = qr_png_path(mob_name, "mobile")
+    qr_hy2 = qr_png_path(mob_name, "hy2") if pu.has_mobile else None
     flash_err = request.query_params.get("err")
     return templates.TemplateResponse(
         "proxy_detail.html",
@@ -847,6 +848,7 @@ def proxy_detail(
             "node": node,
             "qr_wifi": qr_wifi.name if qr_wifi else None,
             "qr_mobile": qr_mobile.name if qr_mobile else None,
+            "qr_hy2": qr_hy2.name if qr_hy2 else None,
             "flash_err": flash_err,
         },
     )

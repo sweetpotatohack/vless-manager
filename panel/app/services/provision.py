@@ -320,15 +320,19 @@ def ensure_qr_codes_for_user(
     mob_name = f"{username}-mob" if has_wifi and has_mobile else username
     if has_wifi and wifi_vless_url:
         write_qr_png(wifi_vless_url, QR_DIR / f"{username}.png")
-    if has_mobile:
-        qr_url = hysteria_url or mobile_vless_url
-        if qr_url:
-            write_qr_png(qr_url, QR_DIR / f"{mob_name}.png")
+    if has_mobile and mobile_vless_url:
+        write_qr_png(mobile_vless_url, QR_DIR / f"{mob_name}.png")
+    if has_mobile and hysteria_url:
+        write_qr_png(hysteria_url, QR_DIR / f"{mob_name}-hy2.png")
 
 
 def qr_png_path(username: str, kind: str = "wifi") -> Path | None:
-    base = username if kind == "wifi" else f"{username}-mob"
-    if kind == "mobile" and not (QR_DIR / f"{base}.png").is_file():
-        base = username
-    p = QR_DIR / f"{base}.png"
+    if kind == "wifi":
+        p = QR_DIR / f"{username}.png"
+    elif kind == "hy2":
+        p = QR_DIR / f"{username}-mob-hy2.png"
+    else:
+        p = QR_DIR / f"{username}-mob.png"
+        if kind == "mobile" and not p.is_file():
+            p = QR_DIR / f"{username}.png"
     return p if p.is_file() else None
