@@ -16,8 +16,12 @@
   <h3 style="margin-top:0">★ LTE — VLESS REALITY :443 (основной)</h3>
   <p class="hint" style="margin-top:0">v2rayTun / аналог: Private DNS и MUX выключить. Импортируйте этот профиль на мобильном интернете.</p>
   <div class="url-box">{{ user.mobile_vless_url }}</div>
+  {% if mobile_vless_ip_url and mobile_vless_ip_url != user.mobile_vless_url %}
+  <p class="hint">Если DNS режет домен — попробуйте с IP (SNI в ссылке не меняется):</p>
+  <div class="url-box">{{ mobile_vless_ip_url }}</div>
+  {% endif %}
   {% if qr_mobile %}
-  <div class="qr-row"><img src="/qr/{{ qr_mobile }}" alt="QR REALITY LTE"></div>
+  <div class="qr-row"><img src="/qr/{{ qr_mobile }}?v=2" alt="QR REALITY LTE"></div>
   {% endif %}
 </div>
 {% endif %}

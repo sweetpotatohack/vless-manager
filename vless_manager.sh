@@ -475,12 +475,6 @@ auth:
 
 ignoreClientBandwidth: true
 
-masquerade:
-  type: proxy
-  proxy:
-    url: https://www.cloudflare.com/cdn-cgi/trace
-    rewriteHost: true
-
 quic:
   initStreamReceiveWindow: 8388608
   maxStreamReceiveWindow: 8388608

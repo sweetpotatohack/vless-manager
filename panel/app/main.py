@@ -837,6 +837,16 @@ def proxy_detail(
     qr_wifi = qr_png_path(pu.username, "wifi")
     qr_mobile = qr_png_path(mob_name, "mobile")
     qr_hy2 = qr_png_path(mob_name, "hy2") if pu.has_mobile else None
+    mobile_vless_ip_url = None
+    if pu.mobile_vless_url and node and (node.public_ip or "").strip():
+        ip = node.public_ip.strip()
+        if re.match(r"^\d+\.\d+\.\d+\.\d+$", ip):
+            mobile_vless_ip_url = re.sub(
+                r"@[^:/]+:",
+                f"@{ip}:",
+                pu.mobile_vless_url,
+                count=1,
+            )
     flash_err = request.query_params.get("err")
     return templates.TemplateResponse(
         "proxy_detail.html",
@@ -849,6 +859,7 @@ def proxy_detail(
             "qr_wifi": qr_wifi.name if qr_wifi else None,
             "qr_mobile": qr_mobile.name if qr_mobile else None,
             "qr_hy2": qr_hy2.name if qr_hy2 else None,
+            "mobile_vless_ip_url": mobile_vless_ip_url,
             "flash_err": flash_err,
         },
     )
