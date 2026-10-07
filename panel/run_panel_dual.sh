@@ -33,20 +33,20 @@ stop_children() {
 trap 'stop_children; exit 0' SIGTERM SIGINT
 
 echo "vless-panel: HTTP fallback :$HTTP_PORT"
-"$UVICORN" "${BASE_ARGS[@]}" --port "$HTTP_PORT" &
+VLESS_PANEL_RUN_AGENT_WORKER=0 "$UVICORN" "${BASE_ARGS[@]}" --port "$HTTP_PORT" &
 pids+=($!)
 
 FC="${LE_FULLCHAIN:-}"
 PK="${LE_PRIVKEY:-}"
 if [[ -n "$FC" && -n "$PK" && -f "$FC" && -f "$PK" ]]; then
   echo "vless-panel: HTTPS :$HTTPS_PORT (certs from tls.env)"
-  "$UVICORN" "${BASE_ARGS[@]}" --port "$HTTPS_PORT" \
+  VLESS_PANEL_RUN_AGENT_WORKER=1 "$UVICORN" "${BASE_ARGS[@]}" --port "$HTTPS_PORT" \
     --ssl-certfile "$FC" --ssl-keyfile "$PK" &
   pids+=($!)
 else
   echo "vless-panel: WARN — LE certs missing; HTTPS :$HTTPS_PORT disabled"
   echo "vless-panel: HTTP also on :$HTTPS_PORT (emergency)"
-  "$UVICORN" "${BASE_ARGS[@]}" --port "$HTTPS_PORT" &
+  VLESS_PANEL_RUN_AGENT_WORKER=1 "$UVICORN" "${BASE_ARGS[@]}" --port "$HTTPS_PORT" &
   pids+=($!)
 fi
 

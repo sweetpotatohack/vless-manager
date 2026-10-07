@@ -35,6 +35,21 @@ def create_provision_job(
     return job
 
 
+def create_uninstall_node_job(db: Session, *, node_id: int) -> AgentJob:
+    job = AgentJob(
+        node_id=node_id,
+        job_type="node_uninstall",
+        username="__uninstall__",
+        has_wifi=False,
+        has_mobile=False,
+        status="pending",
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
 def create_delete_job(
     db: Session,
     *,
@@ -74,7 +89,7 @@ def reclaim_stale_jobs(db: Session, *, minutes: int = 10) -> None:
 async def wait_for_job(
     job_id: int,
     *,
-    timeout_sec: float = 120.0,
+    timeout_sec: float = 180.0,
     poll_sec: float = 2.0,
 ) -> AgentJob:
     import time
@@ -96,5 +111,8 @@ async def wait_for_job(
             db.close()
         await asyncio.sleep(poll_sec)
     raise TimeoutError(
-        "Агент не выполнил задачу вовремя. Проверьте vless-panel на ноде и доступ ноды к master (HTTPS)."
+        "Агент не выполнил задачу вовремя. На agent: systemctl status vless-panel; "
+        "в /etc/vless-manager/panel/agent.env токен = токен ноды на master; "
+        "master.url = https://master:8765; "
+        "curl -H 'Authorization: Bearer TOKEN' https://master/api/v1/agent/next-job → 204."
     )

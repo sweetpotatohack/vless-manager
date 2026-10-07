@@ -38,19 +38,21 @@
 
 <div class="card">
   <h3 style="margin-top:0">Ноды</h3>
-  <table>
+  <div class="table-scroll">
+  <table class="table-stack">
     <thead><tr><th>Имя</th><th>Домен</th><th>Страна</th><th>Роль</th></tr></thead>
     <tbody>
     {% for n in nodes %}
       <tr>
-        <td>{{ n.name }}</td>
-        <td>{{ n.domain }}</td>
-        <td>{{ node_region_display(n) }}</td>
-        <td>{{ node_role_display(n) }}</td>
+        <td data-label="Имя">{{ n.name }}</td>
+        <td data-label="Домен">{{ n.domain }}</td>
+        <td data-label="Страна">{{ node_region_display(n) }}</td>
+        <td data-label="Роль">{{ node_role_display(n) }}</td>
       </tr>
     {% endfor %}
     </tbody>
   </table>
+  </div>
   <p style="margin-top:1rem">
     {% if is_agent %}
     <a href="{{ master_proxy_url }}" class="btn btn-blue" target="_blank" rel="noopener">Выдать конфиг (master)</a>

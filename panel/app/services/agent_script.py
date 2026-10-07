@@ -75,16 +75,26 @@ if [[ -n "$PUBLIC_IP" ]]; then
 else
   REPORT_IP="${{LOCAL_IP:-127.0.0.1}}"
 fi
-API_BASE="http://${{LOCAL_IP:-127.0.0.1}}:8765"
+API_BASE=""
 echo "Публичный IP (egress): ${{REPORT_IP:-?}} · LAN: ${{LOCAL_IP:-—}}"
 
 echo "Регистрация на master..."
-REG_BODY="{{\\"token\\":\\"$NODE_TOKEN\\",\\"public_ip\\":\\"$REPORT_IP\\",\\"api_base\\":\\"$API_BASE\\"}}"
+REG_BODY="{{\\"token\\":\\"$NODE_TOKEN\\",\\"public_ip\\":\\"$REPORT_IP\\"}}"
 REG_RESP="$(curl -fsSL -X POST "$MASTER/api/v1/nodes/register" \\
   -H "Content-Type: application/json" \\
   -d "$REG_BODY")"
 echo "$REG_RESP"
 VPN_DOMAIN="$(printf '%s' "$REG_RESP" | python3 -c "import json,sys; print(json.load(sys.stdin).get('vpn_domain',''))" 2>/dev/null || true)"
+if [[ -n "$VPN_DOMAIN" ]]; then
+  API_BASE="https://${{VPN_DOMAIN}}:8765"
+elif [[ -n "$REPORT_IP" && "$REPORT_IP" != "127.0.0.1" ]]; then
+  API_BASE="http://${{REPORT_IP}}:8765"
+fi
+if [[ -n "$API_BASE" ]]; then
+  curl -fsSL -X POST "$MASTER/api/v1/nodes/register" \\
+    -H "Content-Type: application/json" \\
+    -d "{{\\"token\\":\\"$NODE_TOKEN\\",\\"public_ip\\":\\"$REPORT_IP\\",\\"api_base\\":\\"$API_BASE\\"}}" >/dev/null || true
+fi
 if [[ -n "$VPN_DOMAIN" && -f /opt/vless-manager/vless_manager.sh ]]; then
   echo "VLESS DNS (из панели master): $VPN_DOMAIN"
   bash /opt/vless-manager/vless_manager.sh cli set-public-host "$VPN_DOMAIN" || true
@@ -100,4 +110,14 @@ systemctl enable vless-panel.service vless-agent.service 2>/dev/null || systemct
 systemctl is-active vless-panel.service && echo "vless-panel: active"
 echo "API (справочно): $API_BASE/api/v1/health"
 echo "Provision: agent опрашивает master (HTTPS), прямой доступ master→agent не обязателен"
+echo ""
+echo "Проверка токена agent → master..."
+AGENT_CHECK="$(curl -s -o /dev/null -w '%{{http_code}}' -H "Authorization: Bearer $NODE_TOKEN" "$MASTER/api/v1/agent/next-job" || echo 000)"
+if [[ "$AGENT_CHECK" == "204" || "$AGENT_CHECK" == "200" ]]; then
+  echo "OK: agent API (HTTP $AGENT_CHECK) — очередь задач доступна"
+else
+  echo "WARN: agent API HTTP $AGENT_CHECK — ожидался 204. На agent:"
+  echo "  echo 'VLESS_PANEL_AGENT_TOKEN=$NODE_TOKEN' > /etc/vless-manager/panel/agent.env"
+  echo "  systemctl restart vless-panel"
+fi
 """

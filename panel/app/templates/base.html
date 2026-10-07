@@ -6,14 +6,15 @@
   <title>{{ title }}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Orbitron:wght@500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css?v=7">
+  <link rel="stylesheet" href="/static/style.css?v=8">
 </head>
 <body>
 <div class="scanlines" aria-hidden="true"></div>
 <div class="grid-bg" aria-hidden="true"></div>
 {% if admin is defined and admin %}
-<div class="layout">
-  <aside class="sidebar">
+<div class="layout" id="app-layout">
+  <div class="sidebar-backdrop" id="sidebar-backdrop" aria-hidden="true"></div>
+  <aside class="sidebar" id="sidebar">
     <h1 class="logo glitch" data-text="VLESS">VLESS<span class="logo-accent">PRO</span></h1>
     <p class="logo-sub">// control node</p>
     <nav class="nav">
@@ -28,6 +29,15 @@
       <button type="submit" class="btn btn-red">Logout</button>
     </form>
   </aside>
+  <div class="main-column">
+  <header class="mobile-header">
+    <button type="button" class="nav-toggle" id="nav-toggle" aria-label="Открыть меню" aria-expanded="false" aria-controls="sidebar">
+      <span class="nav-toggle-bar" aria-hidden="true"></span>
+      <span class="nav-toggle-bar" aria-hidden="true"></span>
+      <span class="nav-toggle-bar" aria-hidden="true"></span>
+    </button>
+    <span class="mobile-header-title">VLESS<span class="logo-accent">PRO</span></span>
+  </header>
   <main class="main">
     <div class="main-inner">
     <div class="topbar">
@@ -36,7 +46,9 @@
     {% block content %}{% endblock %}
     </div>
   </main>
+  </div>
 </div>
+<script src="/static/layout.js?v=1"></script>
 {% else %}
   {% block bare %}{% endblock %}
 {% endif %}

@@ -66,12 +66,34 @@ async def _apply_vpn_domain_from_master(master: str, token: str) -> None:
         log.warning("set-public-host from master: %s", exc)
 
 
+def _run_node_uninstall() -> None:
+    services = (
+        "vless-panel.service",
+        "vless-agent.service",
+        "vless-xray.service",
+        "hysteria-server.service",
+        "xray-reality.service",
+        "xray-kibervpn-wifi.service",
+    )
+    for unit in services:
+        subprocess.run(
+            ["systemctl", "disable", "--now", unit],
+            capture_output=True,
+            timeout=45,
+            check=False,
+        )
+
+
 async def _process_job(master: str, token: str, job: dict) -> dict:
     job_id = job["id"]
     job_type = job.get("job_type", "provision")
     username = job["username"]
     wifi = bool(job.get("has_wifi", True))
     mobile = bool(job.get("has_mobile", True))
+
+    if job_type == "node_uninstall":
+        await asyncio.to_thread(_run_node_uninstall)
+        return {"job_id": job_id, "ok": True}
 
     if job_type == "delete":
         result = await asyncio.to_thread(
@@ -131,6 +153,14 @@ async def agent_job_worker_loop() -> None:
                 resp = await client.get(f"{master}/api/v1/agent/next-job", headers=headers)
                 if resp.status_code == 204:
                     await asyncio.sleep(2.0)
+                    continue
+                if resp.status_code == 403:
+                    log.error(
+                        "next-job 403: неверный VLESS_PANEL_AGENT_TOKEN на agent "
+                        "(должен совпадать с токеном ноды на master). "
+                        "Проверьте /etc/vless-manager/panel/agent.env"
+                    )
+                    await asyncio.sleep(15.0)
                     continue
                 if resp.status_code >= 400:
                     log.warning("next-job HTTP %s: %s", resp.status_code, resp.text[:200])

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import os
 import re
 import secrets
 import tarfile
@@ -41,6 +42,7 @@ from app.models import AdminUser, AgentJob, Node, ProxyUser
 from app.services.agent_queue import (
     create_delete_job,
     create_provision_job,
+    create_uninstall_node_job,
     reclaim_stale_jobs,
     remote_uses_job_queue,
     wait_for_job,
@@ -157,7 +159,8 @@ async def on_startup():
         db.close()
     reconcile_wifi_servers()
     asyncio.create_task(cert_autorenew_worker())
-    start_agent_job_worker()
+    if os.environ.get("VLESS_PANEL_RUN_AGENT_WORKER", "1") == "1":
+        start_agent_job_worker()
     asyncio.create_task(_local_metrics_worker())
 
 
@@ -493,13 +496,28 @@ async def nodes_delete(
             status_code=303,
         )
     name = node.name
+    token = node.api_token
     remote_fail: list[str] = []
     users = db.query(ProxyUser).filter(ProxyUser.node_id == node_id).all()
     for pu in users:
-        if node.api_base and node.api_token:
+        if remote_uses_job_queue(node) and token:
+            job = create_delete_job(
+                db,
+                node_id=node.id,
+                username=pu.username,
+                wifi=pu.has_wifi,
+                mobile=pu.has_mobile,
+            )
+            try:
+                done = await wait_for_job(job.id, timeout_sec=90.0)
+                if done.status == "failed":
+                    remote_fail.append(pu.username)
+            except TimeoutError:
+                remote_fail.append(pu.username)
+        elif node.api_base and token:
             result = await delete_remote_client(
                 node.api_base,
-                node.api_token,
+                token,
                 pu.username,
                 wifi=pu.has_wifi,
                 mobile=pu.has_mobile,
@@ -507,11 +525,22 @@ async def nodes_delete(
             if not result.ok:
                 remote_fail.append(pu.username)
         db.delete(pu)
+    uninstall_sent = False
+    if remote_uses_job_queue(node) and token:
+        job = create_uninstall_node_job(db, node_id=node.id)
+        uninstall_sent = True
+        try:
+            await wait_for_job(job.id, timeout_sec=45.0)
+        except TimeoutError:
+            pass
+    db.query(AgentJob).filter(AgentJob.node_id == node_id).delete()
     db.delete(node)
     db.commit()
     msg = f"Нода «{name}» удалена из панели"
+    if uninstall_sent:
+        msg += " · команда снятия agent отправлена (vless-panel на VPS остановится)"
     if remote_fail:
-        msg += f" (на agent не сняты: {', '.join(remote_fail[:5])})"
+        msg += f" (конфиги на agent не сняты: {', '.join(remote_fail[:5])})"
     return RedirectResponse("/nodes?msg=" + quote(msg), status_code=303)
 
 

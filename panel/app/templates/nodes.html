@@ -45,17 +45,19 @@
 
 <div class="card">
   <h3 style="margin-top:0">Порты на agent-ноде (firewall / проброс)</h3>
-  <table>
+  <div class="table-scroll">
+  <table class="table-stack">
     <thead><tr><th>Порт</th><th>Назначение</th></tr></thead>
     <tbody>
-      <tr><td><code>8765/tcp</code></td><td>Панель/API agent (исходящий HTTPS к master достаточен для provision; порт — для диагностики)</td></tr>
-      <tr><td><code>8766/tcp</code></td><td>HTTP fallback панели agent</td></tr>
-      <tr><td><code>25000–45000/tcp</code></td><td>Wi‑Fi VLESS (inbound на каждого клиента)</td></tr>
-      <tr><td><code>443/tcp</code></td><td>LTE — VLESS REALITY</td></tr>
-      <tr><td><code>25001/udp</code></td><td>LTE — Hysteria2</td></tr>
-      <tr><td><code>80/tcp</code></td><td>Let's Encrypt (certbot), если выпускаете LE на agent</td></tr>
+      <tr><td data-label="Порт"><code>8765/tcp</code></td><td data-label="Назначение">Панель/API agent (исходящий HTTPS к master достаточен для provision; порт — для диагностики)</td></tr>
+      <tr><td data-label="Порт"><code>8766/tcp</code></td><td data-label="Назначение">HTTP fallback панели agent</td></tr>
+      <tr><td data-label="Порт"><code>25000–45000/tcp</code></td><td data-label="Назначение">Wi‑Fi VLESS (inbound на каждого клиента)</td></tr>
+      <tr><td data-label="Порт"><code>443/tcp</code></td><td data-label="Назначение">LTE — VLESS REALITY</td></tr>
+      <tr><td data-label="Порт"><code>25001/udp</code></td><td data-label="Назначение">LTE — Hysteria2</td></tr>
+      <tr><td data-label="Порт"><code>80/tcp</code></td><td data-label="Назначение">Let's Encrypt (certbot), если выпускаете LE на agent</td></tr>
     </tbody>
   </table>
+  </div>
   <p class="hint">С master до agent по LAN IP ходить не нужно: конфиги создаются через очередь (agent → master). IP в таблице — белый egress (ident.me / ipify), обновляется при register и heartbeat agent. Клиентам VPN нужен DNS ноды и порты выше.</p>
 </div>
 

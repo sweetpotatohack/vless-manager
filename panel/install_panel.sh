@@ -49,7 +49,12 @@ PYTHONPATH="$INSTALL_DIR" "$VENV/bin/python" -c "from app.models import Node  # 
   exit 1
 }
 
-if [[ -n "${VLESS_PANEL_AGENT_TOKEN:-}" ]]; then
+PANEL_ROLE="${VLESS_PANEL_ROLE:-master}"
+if [[ "$PANEL_ROLE" == "agent" ]]; then
+  if [[ -z "${VLESS_PANEL_AGENT_TOKEN:-}" ]]; then
+    echo "Ошибка: для agent нужен VLESS_PANEL_AGENT_TOKEN (токен ноды с master)." >&2
+    exit 1
+  fi
   cat > "$DATA/agent.env" << EOF
 VLESS_PANEL_AGENT_TOKEN=${VLESS_PANEL_AGENT_TOKEN}
 EOF
@@ -57,20 +62,25 @@ EOF
 elif [[ ! -f "$DATA/agent.env" ]]; then
   TOKEN="$(openssl rand -hex 24)"
   cat > "$DATA/agent.env" << EOF
+# Локальный API master (не путать с токеном remote-ноды в БД)
 VLESS_PANEL_AGENT_TOKEN=$TOKEN
 EOF
   chmod 600 "$DATA/agent.env"
-  echo "Agent token (local): $TOKEN"
+  echo "Master local API token: $TOKEN"
 fi
 
 if [[ -n "${VLESS_PANEL_MASTER_URL:-}" ]]; then
   echo "$VLESS_PANEL_MASTER_URL" > "$DATA/master.url"
-elif [[ -f /etc/vless-manager/tls.env ]]; then
+elif [[ "$PANEL_ROLE" == "master" && -f /etc/vless-manager/tls.env ]]; then
   # shellcheck source=/dev/null
   source /etc/vless-manager/tls.env
   if [[ -n "${PUBLIC_HOST:-}" ]]; then
     echo "https://${PUBLIC_HOST}:8765" > "$DATA/master.url"
   fi
+fi
+if [[ "$PANEL_ROLE" == "agent" && ! -f "$DATA/master.url" ]]; then
+  echo "Ошибка: для agent нужен VLESS_PANEL_MASTER_URL (URL master-панели)." >&2
+  exit 1
 fi
 
 PANEL_ROLE="${VLESS_PANEL_ROLE:-master}"
