@@ -17,6 +17,7 @@ rsync -a --delete \
   --exclude __pycache__ \
   "$REPO_ROOT/panel/" "$INSTALL_DIR/"
 chmod +x "$INSTALL_DIR/run_panel_dual.sh"
+chmod +x "$INSTALL_DIR/scripts/free_panel_ports.sh" 2>/dev/null || true
 
 mkdir -p /opt/vless-manager
 _mgr_src="$REPO_ROOT/vless_manager.sh"
@@ -116,10 +117,13 @@ Environment=VLESS_PANEL_INSTALL_DIR=$INSTALL_DIR
 Environment=VLESS_PANEL_VENV=$VENV
 Environment=VLESS_TLS_ENV=/etc/vless-manager/tls.env
 Environment=VLESS_MANAGER_SH=/opt/vless-manager/vless_manager.sh
+ExecStartPre=/bin/bash $INSTALL_DIR/scripts/free_panel_ports.sh
 ExecStart=/bin/bash $INSTALL_DIR/run_panel_dual.sh
 Restart=on-failure
 RestartSec=3
+TimeoutStopSec=25
 KillMode=control-group
+SendSIGKILL=yes
 LimitNOFILE=65535
 
 [Install]

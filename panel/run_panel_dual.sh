@@ -32,12 +32,33 @@ stop_children() {
 
 trap 'stop_children; exit 0' SIGTERM SIGINT
 
+wait_for_port() {
+  local port=$1
+  local i
+  for i in $(seq 1 15); do
+    if ! ss -tln "sport = :$port" 2>/dev/null | grep -q ":$port "; then
+      return 0
+    fi
+    sleep 0.2
+  done
+  echo "vless-panel: ERROR port :$port still in use" >&2
+  ss -tlnp 2>/dev/null | grep ":$port " >&2 || true
+  return 1
+}
+
+wait_for_port "$HTTP_PORT" || exit 1
 echo "vless-panel: HTTP fallback :$HTTP_PORT"
 VLESS_PANEL_RUN_AGENT_WORKER=0 "$UVICORN" "${BASE_ARGS[@]}" --port "$HTTP_PORT" &
 pids+=($!)
+sleep 0.3
+if ! kill -0 "${pids[-1]}" 2>/dev/null; then
+  echo "vless-panel: HTTP worker failed to start on :$HTTP_PORT" >&2
+  exit 1
+fi
 
 FC="${LE_FULLCHAIN:-}"
 PK="${LE_PRIVKEY:-}"
+wait_for_port "$HTTPS_PORT" || exit 1
 if [[ -n "$FC" && -n "$PK" && -f "$FC" && -f "$PK" ]]; then
   echo "vless-panel: HTTPS :$HTTPS_PORT (certs from tls.env)"
   VLESS_PANEL_RUN_AGENT_WORKER=1 "$UVICORN" "${BASE_ARGS[@]}" --port "$HTTPS_PORT" \
@@ -48,6 +69,12 @@ else
   echo "vless-panel: HTTP also on :$HTTPS_PORT (emergency)"
   VLESS_PANEL_RUN_AGENT_WORKER=1 "$UVICORN" "${BASE_ARGS[@]}" --port "$HTTPS_PORT" &
   pids+=($!)
+fi
+sleep 0.3
+if ! kill -0 "${pids[-1]}" 2>/dev/null; then
+  echo "vless-panel: HTTPS worker failed to start on :$HTTPS_PORT" >&2
+  stop_children
+  exit 1
 fi
 
 while true; do
