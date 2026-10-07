@@ -8,7 +8,11 @@ from pathlib import Path
 
 import httpx
 
-from app.services.provision import delete_local_client, provision_local
+from app.services.provision import (
+    build_client_catalog_for_master,
+    delete_local_client,
+    provision_local,
+)
 from app.services.host_metrics import collect_host_metrics
 from app.services.public_ip import detect_egress_public_ip
 
@@ -94,6 +98,10 @@ async def _process_job(master: str, token: str, job: dict) -> dict:
     if job_type == "node_uninstall":
         await asyncio.to_thread(_run_node_uninstall)
         return {"job_id": job_id, "ok": True}
+
+    if job_type == "import_all":
+        catalog = await asyncio.to_thread(build_client_catalog_for_master)
+        return {"job_id": job_id, "ok": True, "imported_clients": catalog}
 
     if job_type == "delete":
         result = await asyncio.to_thread(

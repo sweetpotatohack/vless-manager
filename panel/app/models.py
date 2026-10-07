@@ -96,7 +96,7 @@ class AgentJob(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     node_id: Mapped[int] = mapped_column(ForeignKey("nodes.id"), index=True)
-    job_type: Mapped[str] = mapped_column(String(16), default="provision")
+    job_type: Mapped[str] = mapped_column(String(24), default="provision")
     username: Mapped[str] = mapped_column(String(64))
     has_wifi: Mapped[bool] = mapped_column(Boolean, default=True)
     has_mobile: Mapped[bool] = mapped_column(Boolean, default=True)

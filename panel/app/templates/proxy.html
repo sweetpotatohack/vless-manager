@@ -55,6 +55,17 @@
 </div>
 {% endif %}
 
+{% if not is_agent %}
+<div class="card">
+  <h3 style="margin-top:0">Синхронизация с agent-нодами</h3>
+  <p class="hint">Подтянуть в master клиентов, которые уже созданы на remote-нодах (Wi‑Fi/LTE на диске agent), но не отображаются здесь.</p>
+  <form method="post" action="/proxy/sync-from-agents" class="form-actions">
+    {% include "csrf_input.html" %}
+    <button type="submit" class="btn btn-cyan">Синхронизировать каталог с нод</button>
+  </form>
+</div>
+{% endif %}
+
 <div class="card">
   <h3 style="margin-top:0">{% if is_agent %}Клиенты на этой ноде (Xray){% else %}Последние клиенты{% endif %}</h3>
   <div class="table-scroll">

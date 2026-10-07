@@ -41,12 +41,14 @@ from app.migrate import run_migrations
 from app.models import AdminUser, AgentJob, Node, ProxyUser
 from app.services.agent_queue import (
     create_delete_job,
+    create_import_all_job,
     create_provision_job,
     create_uninstall_node_job,
     reclaim_stale_jobs,
     remote_uses_job_queue,
     wait_for_job,
 )
+from app.services.proxy_sync import apply_imported_clients
 from app.services.agent_worker import start_agent_job_worker
 from app.services.agent_script import render_agent_install_script
 from app.services.autorenew_task import cert_autorenew_worker
@@ -669,22 +671,6 @@ async def proxy_create(
         .filter(ProxyUser.node_id == node.id, ProxyUser.username == uname)
         .first()
     )
-    if dup:
-        nodes = db.query(Node).filter(Node.is_active.is_(True)).all()
-        users = db.query(ProxyUser).order_by(ProxyUser.created_at.desc()).limit(100).all()
-        return templates.TemplateResponse(
-            "proxy.html",
-            {
-                "request": request,
-                "title": APP_TITLE,
-                "admin": admin,
-                "nodes": nodes,
-                "users": users,
-                "error": f"Пользователь «{uname}» уже есть на этой ноде. Удалите старый конфиг.",
-            },
-            status_code=400,
-        )
-
     api_base = node.api_base
     if node.role == "local":
         api_base = api_base or "http://127.0.0.1:8765"
@@ -749,20 +735,18 @@ async def proxy_create(
             status_code=400,
         )
 
-    pu = ProxyUser(
-        node_id=node.id,
-        username=uname,
-        has_wifi=do_wifi,
-        has_mobile=do_mobile,
-        wifi_vless_url=result.wifi_vless_url,
-        mobile_vless_url=result.mobile_vless_url,
-        hysteria_url=result.hysteria_url,
-        wifi_port=result.wifi_port,
-        uuid=result.uuid,
-        exit_country=node.country or node.region,
-        exit_ip=node_vpn_host(node),
-    )
-    db.add(pu)
+    pu = dup or ProxyUser(node_id=node.id, username=uname)
+    if not dup:
+        db.add(pu)
+    pu.has_wifi = do_wifi
+    pu.has_mobile = do_mobile
+    pu.wifi_vless_url = result.wifi_vless_url
+    pu.mobile_vless_url = result.mobile_vless_url
+    pu.hysteria_url = result.hysteria_url
+    pu.wifi_port = result.wifi_port
+    pu.uuid = result.uuid
+    pu.exit_country = node.country or node.region or ""
+    pu.exit_ip = node_vpn_host(node) or node.public_ip or ""
     db.commit()
     db.refresh(pu)
     ensure_qr_codes_for_user(
@@ -774,6 +758,44 @@ async def proxy_create(
         has_mobile=do_mobile,
     )
     return RedirectResponse(f"/proxy/{pu.id}", status_code=303)
+
+
+@app.post("/proxy/sync-from-agents")
+async def proxy_sync_from_agents(
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+    _: None = Depends(require_form_csrf),
+):
+    if is_agent_panel():
+        return RedirectResponse("/proxy?err=Только на master", status_code=303)
+    nodes = (
+        db.query(Node)
+        .filter(Node.role == "remote", Node.is_active.is_(True), Node.api_token.isnot(None))
+        .all()
+    )
+    if not nodes:
+        return RedirectResponse("/proxy?err=Нет online agent-нод", status_code=303)
+    synced_nodes: list[str] = []
+    errors: list[str] = []
+    for node in nodes:
+        if not remote_uses_job_queue(node):
+            continue
+        job = create_import_all_job(db, node_id=node.id)
+        try:
+            done = await wait_for_job(job.id, timeout_sec=120.0)
+        except TimeoutError:
+            errors.append(node.name)
+            continue
+        if done.status != "done":
+            errors.append(node.name)
+            continue
+        synced_nodes.append(node.name)
+    msg = "Синхронизация с agent-нодами выполнена"
+    if synced_nodes:
+        msg += ": " + ", ".join(synced_nodes)
+    if errors:
+        msg += f" (не ответили: {', '.join(errors)})"
+    return RedirectResponse("/proxy?msg=" + quote(msg), status_code=303)
 
 
 @app.get("/proxy/local/{username}", response_class=HTMLResponse)
@@ -1302,6 +1324,9 @@ async def api_agent_job_result(request: Request, db: Session = Depends(get_db)):
         job.hysteria_url = body.get("hysteria_url")
         job.wifi_port = body.get("wifi_port")
         job.uuid = body.get("uuid")
+        imported = body.get("imported_clients")
+        if isinstance(imported, list) and imported:
+            apply_imported_clients(db, node, imported)
     else:
         job.status = "failed"
         job.error_message = (body.get("error_message") or "failed")[:4000]

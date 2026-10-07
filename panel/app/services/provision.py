@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 
 from app.config import QR_DIR, URL_DIR, VLESS_MANAGER_SH
-from app.services.name_check import validate_new_username
+from app.services.name_check import CLIENT_DIR, MOBILE_DIR
 from app.services.ports import ensure_can_provision
 
 
@@ -78,13 +78,75 @@ def _extract_uuid_from_vless(url: str | None) -> str | None:
     return m.group(1) if m else None
 
 
+def _mobile_profile_name(username: str, *, wifi: bool, mobile: bool) -> str:
+    if mobile and wifi:
+        return f"{username}-mob"
+    if mobile:
+        return username
+    return f"{username}-mob"
+
+
+def _mobile_on_disk(username: str, mob_name: str) -> bool:
+    return (MOBILE_DIR / f"{mob_name}.uuid").is_file() or (
+        MOBILE_DIR / f"{username}.uuid"
+    ).is_file()
+
+
+def _resolve_mob_name(username: str, mob_name: str) -> str:
+    if (MOBILE_DIR / f"{mob_name}.uuid").is_file():
+        return mob_name
+    if (MOBILE_DIR / f"{username}.uuid").is_file():
+        return username
+    return mob_name
+
+
+def _cli_create_wifi(mgr: Path, username: str) -> ProvisionResult | None:
+    r = subprocess.run(
+        ["/bin/bash", str(mgr), "cli", "create-wifi", username],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        env={**__import__("os").environ, "VLESS_CLI": "1"},
+    )
+    out = r.stdout + r.stderr
+    if r.returncode != 0 or "уже существует" in out:
+        if "уже существует" in out:
+            return None
+        if "Выбери опцию" in out or "ГЛАВНОЕ МЕНЮ" in out:
+            return ProvisionResult(
+                False,
+                "На сервере старый vless_manager.sh без cli. Обновите /opt/vless-manager/vless_manager.sh",
+            )
+        return ProvisionResult(False, out[:2000] or "create-wifi failed")
+    return None
+
+
+def _cli_create_mobile(mgr: Path, mob_name: str) -> ProvisionResult | None:
+    r = subprocess.run(
+        ["/bin/bash", str(mgr), "cli", "create-mobile", mob_name],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        env={**__import__("os").environ, "VLESS_CLI": "1"},
+    )
+    out = r.stdout + r.stderr
+    if r.returncode != 0 or "уже существует" in out:
+        if "уже существует" in out:
+            return None
+        if "Выбери опцию" in out or "ГЛАВНОЕ МЕНЮ" in out:
+            return ProvisionResult(
+                False,
+                "vless_manager.sh без режима cli — обновите /opt/vless-manager/vless_manager.sh",
+            )
+        return ProvisionResult(False, out[:2000] or "create-mobile failed")
+    return None
+
+
 def provision_local(username: str, *, wifi: bool, mobile: bool) -> ProvisionResult:
     if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$", username):
         return ProvisionResult(False, "Недопустимое имя пользователя")
-
-    ok_name, name_msg = validate_new_username(username, wifi=wifi, mobile=mobile)
-    if not ok_name:
-        return ProvisionResult(False, name_msg)
+    if not wifi and not mobile:
+        return ProvisionResult(False, "Выберите Wi‑Fi и/или LTE")
 
     mgr = VLESS_MANAGER_SH
     if not mgr.is_file():
@@ -96,70 +158,98 @@ def provision_local(username: str, *, wifi: bool, mobile: bool) -> ProvisionResu
     if not ok:
         return ProvisionResult(False, msg)
 
+    synced = False
     wifi_url = mobile_url = hy2_url = None
+    has_wifi = (CLIENT_DIR / f"{username}.json").is_file()
+    mob_name = _mobile_profile_name(username, wifi=wifi, mobile=mobile)
 
     if wifi:
-        r = subprocess.run(
-            ["/bin/bash", str(mgr), "cli", "create-wifi", username],
-            capture_output=True,
-            text=True,
-            timeout=300,
-            env={**__import__("os").environ, "VLESS_CLI": "1"},
-        )
-        out = r.stdout + r.stderr
-        if r.returncode != 0 or "уже существует" in out:
-            if "уже существует" in out:
-                return ProvisionResult(False, f"Конфиг «{username}» уже существует")
-            if "Выбери опцию" in out or "ГЛАВНОЕ МЕНЮ" in out:
+        if has_wifi:
+            synced = True
+            ok_run, run_msg = ensure_wifi_server_running(username)
+            if not ok_run:
                 return ProvisionResult(
                     False,
-                    "На сервере старый vless_manager.sh без cli. Запустите: "
-                    "cp /root/vless-manager-pro/vless_manager.sh /opt/vless-manager/ "
-                    "и перезапустите panel.",
+                    f"Wi‑Fi «{username}» на диске, но inbound не поднялся: {run_msg}",
                 )
-            return ProvisionResult(False, out[:2000] or "create-wifi failed")
-        ok_run, run_msg = ensure_wifi_server_running(username)
-        if not ok_run:
-            return ProvisionResult(
-                False,
-                f"Конфиг создан, но inbound не слушает порт: {run_msg}",
-            )
-        wifi_url = _read_url_file(username)
+            wifi_url = _read_url_file(username)
+        else:
+            err = _cli_create_wifi(mgr, username)
+            if isinstance(err, ProvisionResult):
+                return err
+            ok_run, run_msg = ensure_wifi_server_running(username)
+            if not ok_run:
+                return ProvisionResult(
+                    False,
+                    f"Конфиг создан, но inbound не слушает порт: {run_msg}",
+                )
+            wifi_url = _read_url_file(username)
 
     if mobile:
-        mob_name = f"{username}-mob" if wifi else username
-        r = subprocess.run(
-            ["/bin/bash", str(mgr), "cli", "create-mobile", mob_name],
-            capture_output=True,
-            text=True,
-            timeout=300,
-            env={**__import__("os").environ, "VLESS_CLI": "1"},
-        )
-        out = r.stdout + r.stderr
-        if r.returncode != 0 or "уже существует" in out:
-            if "уже существует" in out:
-                return ProvisionResult(False, f"Конфиг «{mob_name}» уже существует")
-            if "Выбери опцию" in out or "ГЛАВНОЕ МЕНЮ" in out:
-                return ProvisionResult(
-                    False,
-                    "vless_manager.sh без режима cli — обновите /opt/vless-manager/vless_manager.sh",
-                )
-            return ProvisionResult(False, out[:2000] or "create-mobile failed")
-        mobile_url = _read_url_file(mob_name)
-        hy2_url = _read_url_file(mob_name, "-hy2")
+        if _mobile_on_disk(username, mob_name):
+            synced = True
+            actual_mob = _resolve_mob_name(username, mob_name)
+            mobile_url = _read_url_file(actual_mob)
+            hy2_url = _read_url_file(actual_mob, "-hy2")
+        else:
+            err = _cli_create_mobile(mgr, mob_name)
+            if isinstance(err, ProvisionResult):
+                return err
+            mobile_url = _read_url_file(mob_name)
+            hy2_url = _read_url_file(mob_name, "-hy2")
+            if not mobile_url and mob_name != username:
+                mobile_url = _read_url_file(username)
+                hy2_url = _read_url_file(username, "-hy2")
+
+    if wifi and not wifi_url:
+        return ProvisionResult(False, f"Wi‑Fi «{username}»: нет URL на ноде")
+    if mobile and not mobile_url and not hy2_url:
+        return ProvisionResult(False, f"LTE «{mob_name}»: нет URL на ноде")
+    if not wifi_url and not mobile_url and not hy2_url:
+        return ProvisionResult(False, "Конфиг не создан")
 
     uuid = _extract_uuid_from_vless(mobile_url or wifi_url)
     port = _extract_port_from_vless(wifi_url)
+    message = "Синхронизировано с конфигом на ноде" if synced else "OK"
 
     return ProvisionResult(
         ok=True,
-        message="OK",
+        message=message,
         wifi_vless_url=wifi_url,
         mobile_vless_url=mobile_url,
         hysteria_url=hy2_url,
         wifi_port=port,
         uuid=uuid,
     )
+
+
+def build_client_catalog_for_master() -> list[dict]:
+    from app.services.local_clients import list_grouped_local_clients, load_local_client_urls
+
+    catalog: list[dict] = []
+    for row in list_grouped_local_clients():
+        username = row["username"]
+        urls = load_local_client_urls(username)
+        wifi_url = urls.get("wifi_vless_url")
+        mobile_url = urls.get("mobile_vless_url")
+        hy2 = urls.get("hysteria_url")
+        has_wifi = bool(row.get("wifi_port") or wifi_url)
+        has_mobile = bool(row.get("mobile_port") or mobile_url or hy2)
+        if not has_wifi and not has_mobile:
+            continue
+        catalog.append(
+            {
+                "username": username,
+                "has_wifi": has_wifi,
+                "has_mobile": has_mobile,
+                "wifi_vless_url": wifi_url,
+                "mobile_vless_url": mobile_url,
+                "hysteria_url": hy2,
+                "wifi_port": _extract_port_from_vless(wifi_url),
+                "uuid": _extract_uuid_from_vless(mobile_url or wifi_url),
+            }
+        )
+    return catalog
 
 
 async def fetch_remote_port_status(api_base: str, token: str) -> tuple[bool, dict | str]:

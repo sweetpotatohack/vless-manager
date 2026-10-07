@@ -35,6 +35,21 @@ def create_provision_job(
     return job
 
 
+def create_import_all_job(db: Session, *, node_id: int) -> AgentJob:
+    job = AgentJob(
+        node_id=node_id,
+        job_type="import_all",
+        username="__import__",
+        has_wifi=False,
+        has_mobile=False,
+        status="pending",
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
 def create_uninstall_node_job(db: Session, *, node_id: int) -> AgentJob:
     job = AgentJob(
         node_id=node_id,
