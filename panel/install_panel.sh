@@ -59,14 +59,14 @@ if [[ "$PANEL_ROLE" == "agent" ]]; then
 VLESS_PANEL_AGENT_TOKEN=${VLESS_PANEL_AGENT_TOKEN}
 EOF
   chmod 600 "$DATA/agent.env"
-elif [[ ! -f "$DATA/agent.env" ]]; then
+elif [[ ! -f "$DATA/master-api.env" ]]; then
   TOKEN="$(openssl rand -hex 24)"
-  cat > "$DATA/agent.env" << EOF
-# Локальный API master (не путать с токеном remote-ноды в БД)
+  cat > "$DATA/master-api.env" << EOF
+# Опциональный локальный Bearer для /api/v1/* на master (не токен remote-нод)
 VLESS_PANEL_AGENT_TOKEN=$TOKEN
 EOF
-  chmod 600 "$DATA/agent.env"
-  echo "Master local API token: $TOKEN"
+  chmod 600 "$DATA/master-api.env"
+  echo "Master local API token (master-api.env): $TOKEN"
 fi
 
 if [[ -n "${VLESS_PANEL_MASTER_URL:-}" ]]; then
@@ -90,6 +90,13 @@ else
   PANEL_DESC="VLESS Manager Pro Control Panel"
 fi
 
+ENV_FILE_LINE=""
+if [[ "$PANEL_ROLE" == "agent" ]]; then
+  ENV_FILE_LINE="EnvironmentFile=-$DATA/agent.env"
+elif [[ -f "$DATA/master-api.env" ]]; then
+  ENV_FILE_LINE="EnvironmentFile=-$DATA/master-api.env"
+fi
+
 cat > /etc/systemd/system/vless-panel.service << EOF
 [Unit]
 Description=$PANEL_DESC
@@ -100,7 +107,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=$INSTALL_DIR
 Environment=PYTHONPATH=$INSTALL_DIR
-EnvironmentFile=-$DATA/agent.env
+${ENV_FILE_LINE}
 Environment=VLESS_PANEL_HOST=0.0.0.0
 Environment=VLESS_PANEL_HTTPS_PORT=8765
 Environment=VLESS_PANEL_HTTP_PORT=8766

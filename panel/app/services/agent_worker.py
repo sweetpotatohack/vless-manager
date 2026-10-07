@@ -131,7 +131,11 @@ async def agent_job_worker_loop() -> None:
         log.warning("agent worker: нет master.url или agent token — опрос задач отключён")
         return
     headers = {"Authorization": f"Bearer {token}"}
-    log.info("agent worker: polling %s for jobs", master)
+    log.info(
+        "agent worker: polling %s (token …%s)",
+        master,
+        token[-8:] if len(token) >= 8 else "?",
+    )
     ticks = 0
     while True:
         try:

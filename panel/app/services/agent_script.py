@@ -111,13 +111,18 @@ systemctl is-active vless-panel.service && echo "vless-panel: active"
 echo "API (справочно): $API_BASE/api/v1/health"
 echo "Provision: agent опрашивает master (HTTPS), прямой доступ master→agent не обязателен"
 echo ""
-echo "Проверка токена agent → master..."
-AGENT_CHECK="$(curl -s -o /dev/null -w '%{{http_code}}' -H "Authorization: Bearer $NODE_TOKEN" "$MASTER/api/v1/agent/next-job" || echo 000)"
-if [[ "$AGENT_CHECK" == "204" || "$AGENT_CHECK" == "200" ]]; then
-  echo "OK: agent API (HTTP $AGENT_CHECK) — очередь задач доступна"
+install -d /etc/vless-manager/panel
+printf 'VLESS_PANEL_AGENT_TOKEN=%s\\n' "$NODE_TOKEN" > /etc/vless-manager/panel/agent.env
+printf '%s\\n' "$MASTER" > /etc/vless-manager/panel/master.url
+chmod 600 /etc/vless-manager/panel/agent.env
+systemctl restart vless-panel.service 2>/dev/null || true
+sleep 2
+echo "Проверка токена agent → master (без захвата задач)..."
+AGENT_CHECK="$(curl -s -o /dev/null -w '%{{http_code}}' -H "Authorization: Bearer $NODE_TOKEN" "$MASTER/api/v1/agent/auth-check" || echo 000)"
+if [[ "$AGENT_CHECK" == "204" ]]; then
+  echo "OK: agent API — токен принят master"
 else
-  echo "WARN: agent API HTTP $AGENT_CHECK — ожидался 204. На agent:"
-  echo "  echo 'VLESS_PANEL_AGENT_TOKEN=$NODE_TOKEN' > /etc/vless-manager/panel/agent.env"
-  echo "  systemctl restart vless-panel"
+  echo "WARN: auth-check HTTP $AGENT_CHECK — ожидался 204"
+  echo "  agent.env и master.url перезаписаны; проверьте: systemctl status vless-panel"
 fi
 """

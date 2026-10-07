@@ -706,7 +706,7 @@ async def proxy_create(
                 mobile=do_mobile,
             )
             try:
-                job = await wait_for_job(job.id)
+                job = await wait_for_job(job.id, timeout_sec=300.0)
             except TimeoutError as e:
                 result = ProvisionResult(False, str(e))
             else:
@@ -1222,6 +1222,15 @@ def _bundle_paths() -> list[tuple[str, Path]]:
     if vss.is_file():
         items.append(("vless-servers-script.sh", vss))
     return items
+
+
+@app.get("/api/v1/agent/auth-check")
+def api_agent_auth_check(request: Request, db: Session = Depends(get_db)):
+    """Проверка Bearer-токена ноды без постановки задач в processing."""
+    node = _agent_node_from_request(request, db)
+    if not node:
+        raise HTTPException(403, "Invalid agent token")
+    return Response(status_code=204)
 
 
 @app.get("/api/v1/agent/next-job")
