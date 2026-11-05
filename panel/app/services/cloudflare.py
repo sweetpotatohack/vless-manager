@@ -173,7 +173,7 @@ async def ensure_origin_rule(token: str, zone_id: str, hostname: str, port: int)
         "action": "route",
         "expression": expr,
         "description": f"vless-cf: origin port {port}",
-        "action_parameters": {"host_header": host, "origin": {"port": port}},
+        "action_parameters": {"origin": {"port": port}},
     }
     rules = [r for r in existing if (r.get("expression") or "") != expr]
     rules.append(new_rule)
