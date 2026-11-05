@@ -24,6 +24,7 @@ def upsert_proxy_user_from_agent(
     wifi_url = entry.get("wifi_vless_url")
     mobile_url = entry.get("mobile_vless_url")
     hy2 = entry.get("hysteria_url")
+    cf_url = entry.get("cf_vless_url")
     wifi_port = entry.get("wifi_port")
     if wifi_port is None:
         wifi_port = _extract_port_from_vless(wifi_url)
@@ -47,6 +48,7 @@ def upsert_proxy_user_from_agent(
     pu.wifi_vless_url = wifi_url
     pu.mobile_vless_url = mobile_url
     pu.hysteria_url = hy2
+    pu.cf_vless_url = cf_url
     pu.wifi_port = wifi_port
     pu.uuid = uuid
     pu.exit_country = node.country or node.region or ""
@@ -57,6 +59,7 @@ def upsert_proxy_user_from_agent(
         wifi_vless_url=wifi_url,
         mobile_vless_url=mobile_url,
         hysteria_url=hy2,
+        cf_vless_url=cf_url,
         has_wifi=has_wifi,
         has_mobile=has_mobile,
     )

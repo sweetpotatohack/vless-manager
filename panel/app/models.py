@@ -35,6 +35,13 @@ class PanelSettings(Base):
     smtp_password: Mapped[str] = mapped_column(String(512), default="")
     smtp_security: Mapped[str] = mapped_column(String(16), default="starttls")
     smtp_from_email: Mapped[str] = mapped_column(String(256), default="")
+    cf_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    cf_api_token: Mapped[str] = mapped_column(String(512), default="")
+    cf_zone: Mapped[str] = mapped_column(String(255), default="")
+    cf_hostname: Mapped[str] = mapped_column(String(255), default="")
+    cf_path: Mapped[str] = mapped_column(String(128), default="/ws-akuma67")
+    cf_port: Mapped[int] = mapped_column(Integer, default=8443)
+    cf_ssl_mode: Mapped[str] = mapped_column(String(16), default="full")
 
 
 class Node(Base):
@@ -77,6 +84,7 @@ class ProxyUser(Base):
     wifi_vless_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     mobile_vless_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     hysteria_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cf_vless_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     wifi_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
     uuid: Mapped[str | None] = mapped_column(String(64), nullable=True)
     exit_country: Mapped[str] = mapped_column(String(128), default="")
@@ -105,6 +113,7 @@ class AgentJob(Base):
     wifi_vless_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     mobile_vless_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     hysteria_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cf_vless_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     wifi_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
     uuid: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(

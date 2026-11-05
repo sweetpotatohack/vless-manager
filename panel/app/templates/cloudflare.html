@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block content %}
+<h2 class="page-title"><span class="title-accent">//</span> Cloudflare — обход блокировок</h2>
+<p class="muted">
+  Схема: <code>Клиент → Cloudflare:443 (WS, SNI=поддомен) → сервер:{{ settings.cf_port or 8443 }} (xray-cf)</code>.
+  Работает там, где прямой IP/REALITY не доходят (режет маршрут провайдера).
+</p>
+
+{% if flash_ok %}
+<div class="alert alert-ok animate-in">{{ flash_ok }}</div>
+{% endif %}
+{% if flash_err %}
+<div class="alert alert-error animate-in">{{ flash_err }}</div>
+{% endif %}
+
+<div class="alert alert-warn animate-in">
+  <strong>Один раз руками:</strong> перенесите NS домена на Cloudflare (у регистратора) и дождитесь статуса
+  <strong>Active</strong>. Всё остальное (DNS, Origin Rule, SSL-режим) панель сделает сама через API.
+</div>
+
+<div class="card card-glow">
+  <h3 class="card-title">Настройки</h3>
+  <form method="post" action="/cloudflare/settings">
+    {% include "csrf_input.html" %}
+    <label class="check-line">
+      <input type="checkbox" name="cf_enabled" {% if settings.cf_enabled %}checked{% endif %}>
+      Включить Cloudflare-профиль (чекбокс «Cloudflare» появится в Proxy)
+    </label>
+    <label>API-токен Cloudflare (права: Zone → DNS:Edit, Zone → Zone:Edit)</label>
+    <input type="password" name="cf_api_token" autocomplete="off" placeholder="{% if settings.cf_api_token %}токен сохранён — введите новый, чтобы заменить{% else %}например 4Xy…{% endif %}">
+    <p class="hint">Создать: Cloudflare → My Profile → API Tokens → Create Token → «Edit zone DNS» (Zone Resources: Include → ваш домен).</p>
+
+    <div class="grid-2">
+      <div>
+        <label>Зона (домен в Cloudflare)</label>
+        <input type="text" name="cf_zone" value="{{ settings.cf_zone }}" placeholder="example.com">
+      </div>
+      <div>
+        <label>Hostname (поддомен для VPN)</label>
+        <input type="text" name="cf_hostname" value="{{ settings.cf_hostname }}" placeholder="vpn.example.com">
+      </div>
+    </div>
+
+    <div class="grid-3">
+      <div>
+        <label>WebSocket path</label>
+        <input type="text" name="cf_path" value="{{ settings.cf_path or '/ws-akuma67' }}">
+      </div>
+      <div>
+        <label>Порт origin (сервер)</label>
+        <input type="number" name="cf_port" min="1" max="65535" value="{{ settings.cf_port or 8443 }}" class="input-sm">
+      </div>
+      <div>
+        <label>SSL/TLS режим</label>
+        <select name="cf_ssl_mode">
+          {% for m in ['off','flexible','full','strict'] %}
+          <option value="{{ m }}" {% if (settings.cf_ssl_mode or 'full') == m %}selected{% endif %}>{{ m }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+    <p class="hint">Для xray-cf (VLESS+WS) достаточно <strong>Full</strong> — Cloudflare не валидирует origin-сертификат. «Full (Strict)» требует Origin Certificate от CF.</p>
+
+    <div class="form-actions">
+      <button type="submit" class="btn btn-blue">Сохранить и поднять xray-cf</button>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <h3 class="card-title">Подготовить домен через API</h3>
+  <p class="hint">Создаёт A-запись (proxied), Origin Rule на порт origin и выставляет SSL-режим.</p>
+  <div class="actions-grid">
+    <form method="post" action="/cloudflare/setup" class="action-block">
+      {% include "csrf_input.html" %}
+      <p><strong>Автонастройка</strong> — DNS {{ settings.cf_hostname or 'vpn.<зона>' }} → {{ local_ip or 'IP сервера' }}, Origin Rule → :{{ settings.cf_port or 8443 }}, SSL={{ settings.cf_ssl_mode or 'full' }}</p>
+      <button type="submit" class="btn btn-blue" {% if not settings.cf_api_token or not settings.cf_zone %}disabled title="Сначала сохраните токен и зону"{% endif %}>Подготовить домен</button>
+    </form>
+    <form method="post" action="/cloudflare/check" class="action-block">
+      {% include "csrf_input.html" %}
+      <p><strong>Проверка</strong> — достучался ли Cloudflare до origin (HTTP 400/404/502/503 = ок, 521–524 = origin недоступен).</p>
+      <button type="submit" class="btn btn-cyan" {% if not settings.cf_hostname %}disabled{% endif %}>Проверить origin</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <h3 class="card-title">Сервер (xray-cf)</h3>
+  <p>
+    Служба: <strong>{{ server.get('service', '—') }}</strong> ·
+    host: <code>{{ server.get('host') or '—' }}</code> ·
+    path: <code>{{ server.get('path') or '—' }}</code> ·
+    origin port: <code>{{ server.get('port') or '—' }}</code> ·
+    клиентов: <strong>{{ server.get('clients', '0') }}</strong>
+  </p>
+  {% if origin_check %}
+  <p>Origin: {% if origin_check.ok %}<span class="badge badge-ok">доступен</span>{% else %}<span class="badge badge-bad">недоступен</span>{% endif %}
+    — {{ origin_check.message }}</p>
+  {% endif %}
+</div>
+
+{% if zone_info %}
+<div class="card">
+  <h3 class="card-title">Зона Cloudflare</h3>
+  <p>
+    Домен: <strong>{{ zone_info.name }}</strong> ·
+    статус: <strong>{{ zone_info.status }}</strong> ·
+    SSL-режим: <strong>{{ ssl_mode or '—' }}</strong>
+  </p>
+  {% if name_servers %}
+  <p class="hint">NS, которые нужно прописать у регистратора:</p>
+  <ul class="muted">
+    {% for ns in name_servers %}<li><code>{{ ns }}</code></li>{% endfor %}
+  </ul>
+  {% endif %}
+</div>
+{% else %}
+<div class="card">
+  <h3 class="card-title">Зона Cloudflare</h3>
+  <p class="muted">{% if settings.cf_api_token %}Зона «{{ settings.cf_zone }}» не найдена или токен не подходит — проверьте права токена и что домен добавлен (Add a site).{% else %}Сохраните API-токен и зону, чтобы видеть статус и NS.{% endif %}</p>
+</div>
+{% endif %}
+{% endblock %}

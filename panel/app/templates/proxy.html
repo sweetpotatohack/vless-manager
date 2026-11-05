@@ -35,7 +35,7 @@
     <label>3. Нода (сервер)</label>
     <select name="node_id" id="node-select" required>
       <option value="">— выберите ноду —</option>
-      {% for n in nodes %}
+      {% for n in form_nodes %}
       <option value="{{ n.id }}"
         data-country="{{ (n.country or n.region or '—')|e }}"
         data-ip="{{ (node_vpn_host(n) or '—')|e }}"
@@ -45,12 +45,13 @@
       {% endfor %}
     </select>
 
-    <div class="checkbox-row">
-      <label><input type="checkbox" name="wifi" checked> Wi‑Fi — VLESS + TLS</label>
-      <label><input type="checkbox" name="mobile" checked> LTE — REALITY :443 (+ Hy2 запасной)</label>
+    <div class="info-strip">
+      <span aria-hidden="true">🛰️</span>
+      <span class="info-strip-part">Профиль: <strong>универсальный Cloudflare WebSocket</strong></span>
     </div>
-    <p id="wait-hint" style="display:none;color:var(--warn)">Генерация 30–90 сек, не закрывайте страницу…</p>
-    <button type="submit" id="submit-btn" class="btn btn-blue btn-lg">Сгенерировать ссылки и QR</button>
+    <p class="hint">Один конфиг + QR для Wi‑Fi и мобильного интернета: клиент → Cloudflare:443 → сервер. Настраивается в разделе <a href="/cloudflare">Cloudflare</a>.</p>
+    <p id="wait-hint" style="display:none;color:var(--warn)">Генерация 10–30 сек, не закрывайте страницу…</p>
+    <button type="submit" id="submit-btn" class="btn btn-blue btn-lg">Создать универсальный профиль + QR</button>
   </form>
 </div>
 {% endif %}

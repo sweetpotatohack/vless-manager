@@ -48,6 +48,7 @@ class ProvisionResult:
     wifi_vless_url: str | None = None
     mobile_vless_url: str | None = None
     hysteria_url: str | None = None
+    cf_vless_url: str | None = None
     wifi_port: int | None = None
     uuid: str | None = None
 
@@ -119,6 +120,68 @@ def _cli_create_wifi(mgr: Path, username: str) -> ProvisionResult | None:
             )
         return ProvisionResult(False, out[:2000] or "create-wifi failed")
     return None
+
+
+def _cli_create_cf(mgr: Path, username: str) -> ProvisionResult | None:
+    r = subprocess.run(
+        ["/bin/bash", str(mgr), "cli", "create-cf", username],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        env={**__import__("os").environ, "VLESS_CLI": "1"},
+    )
+    out = r.stdout + r.stderr
+    if r.returncode != 0 or "уже существует" in out:
+        if "уже существует" in out:
+            return None
+        return ProvisionResult(False, out[:2000] or "create-cf failed")
+    return None
+
+
+def provision_cf_local(username: str) -> ProvisionResult:
+    """Cloudflare WS профиль (master). Общий inbound xray-cf :8443."""
+    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$", username):
+        return ProvisionResult(False, "Недопустимое имя пользователя")
+    mgr = VLESS_MANAGER_SH
+    if not mgr.is_file():
+        mgr = Path(__file__).resolve().parents[3] / "vless_manager.sh"
+    if not mgr.is_file():
+        return ProvisionResult(False, f"Не найден vless_manager.sh ({mgr})")
+    cf_url = _read_url_file(username, "-cf")
+    if cf_url:
+        return ProvisionResult(
+            ok=True,
+            message="Синхронизировано с конфигом на ноде",
+            cf_vless_url=cf_url,
+            uuid=_extract_uuid_from_vless(cf_url),
+        )
+    err = _cli_create_cf(mgr, username)
+    if isinstance(err, ProvisionResult):
+        return err
+    cf_url = _read_url_file(username, "-cf")
+    if not cf_url:
+        return ProvisionResult(False, "Cloudflare WS: нет URL на ноде")
+    return ProvisionResult(
+        ok=True, message="OK", cf_vless_url=cf_url, uuid=_extract_uuid_from_vless(cf_url)
+    )
+
+
+def delete_cf_local(username: str) -> ProvisionResult:
+    mgr = VLESS_MANAGER_SH
+    if not mgr.is_file():
+        mgr = Path(__file__).resolve().parents[3] / "vless_manager.sh"
+    if not mgr.is_file():
+        return ProvisionResult(False, f"Не найден vless_manager.sh ({mgr})")
+    r = subprocess.run(
+        ["/bin/bash", str(mgr), "cli", "delete-cf", username],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={**__import__("os").environ, "VLESS_CLI": "1"},
+    )
+    if r.returncode != 0:
+        return ProvisionResult(False, (r.stderr or r.stdout or "delete-cf failed")[:2000])
+    return ProvisionResult(True, "Cloudflare WS конфиг удалён")
 
 
 def _cli_create_mobile(mgr: Path, mob_name: str) -> ProvisionResult | None:
@@ -233,9 +296,10 @@ def build_client_catalog_for_master() -> list[dict]:
         wifi_url = urls.get("wifi_vless_url")
         mobile_url = urls.get("mobile_vless_url")
         hy2 = urls.get("hysteria_url")
+        cf_url = urls.get("cf_vless_url")
         has_wifi = bool(row.get("wifi_port") or wifi_url)
         has_mobile = bool(row.get("mobile_port") or mobile_url or hy2)
-        if not has_wifi and not has_mobile:
+        if not has_wifi and not has_mobile and not cf_url:
             continue
         catalog.append(
             {
@@ -245,8 +309,9 @@ def build_client_catalog_for_master() -> list[dict]:
                 "wifi_vless_url": wifi_url,
                 "mobile_vless_url": mobile_url,
                 "hysteria_url": hy2,
+                "cf_vless_url": cf_url,
                 "wifi_port": _extract_port_from_vless(wifi_url),
-                "uuid": _extract_uuid_from_vless(mobile_url or wifi_url),
+                "uuid": _extract_uuid_from_vless(mobile_url or wifi_url or cf_url),
             }
         )
     return catalog
@@ -335,7 +400,9 @@ async def provision_remote(
         return ProvisionResult(False, str(e))
 
 
-def delete_local_client(username: str, *, wifi: bool, mobile: bool) -> ProvisionResult:
+def delete_local_client(
+    username: str, *, wifi: bool, mobile: bool, cf: bool = False
+) -> ProvisionResult:
     mgr = VLESS_MANAGER_SH
     if not mgr.is_file():
         mgr = Path(__file__).resolve().parents[3] / "vless_manager.sh"
@@ -352,6 +419,8 @@ def delete_local_client(username: str, *, wifi: bool, mobile: bool) -> Provision
     )
     if r.returncode != 0:
         return ProvisionResult(False, (r.stderr or r.stdout or "delete failed")[:2000])
+    if cf:
+        return delete_cf_local(username)
     return ProvisionResult(True, "Конфиг удалён")
 
 
@@ -404,6 +473,7 @@ def ensure_qr_codes_for_user(
     wifi_vless_url: str | None,
     mobile_vless_url: str | None,
     hysteria_url: str | None,
+    cf_vless_url: str | None = None,
     has_wifi: bool,
     has_mobile: bool,
 ) -> None:
@@ -414,6 +484,8 @@ def ensure_qr_codes_for_user(
         write_qr_png(mobile_vless_url, QR_DIR / f"{mob_name}.png")
     if has_mobile and hysteria_url:
         write_qr_png(hysteria_url, QR_DIR / f"{mob_name}-hy2.png")
+    if cf_vless_url:
+        write_qr_png(cf_vless_url, QR_DIR / f"{username}-cf.png")
 
 
 def qr_png_path(username: str, kind: str = "wifi") -> Path | None:
@@ -421,6 +493,8 @@ def qr_png_path(username: str, kind: str = "wifi") -> Path | None:
         p = QR_DIR / f"{username}.png"
     elif kind == "hy2":
         p = QR_DIR / f"{username}-mob-hy2.png"
+    elif kind == "cf":
+        p = QR_DIR / f"{username}-cf.png"
     else:
         p = QR_DIR / f"{username}-mob.png"
         if kind == "mobile" and not p.is_file():

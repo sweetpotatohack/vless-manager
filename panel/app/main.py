@@ -42,7 +42,6 @@ from app.models import AdminUser, AgentJob, Node, ProxyUser
 from app.services.agent_queue import (
     create_delete_job,
     create_import_all_job,
-    create_provision_job,
     create_uninstall_node_job,
     reclaim_stale_jobs,
     remote_uses_job_queue,
@@ -78,14 +77,30 @@ from app.services.nodes_helpers import (
 from app.services.ports import port_status
 from app.services.provision import (
     ProvisionResult,
+    delete_cf_local,
     delete_local_client,
     delete_remote_client,
+    provision_cf_local,
     provision_local,
-    provision_remote,
     ensure_qr_codes_for_user,
     qr_png_path,
     reconcile_wifi_servers,
 )
+from app.services.cloudflare import (
+    check_origin,
+    ensure_dns_record,
+    ensure_origin_rule,
+    get_ssl_mode,
+    get_zone,
+    normalize_hostname,
+    set_ssl_mode,
+)
+from app.services.cf_server import (
+    cf_server_status,
+    ensure_cf_server,
+    write_cf_env,
+)
+from app.services.public_ip import detect_egress_public_ip
 from app.security import (
     apply_security_headers,
     attach_csrf_cookie,
@@ -585,6 +600,7 @@ def proxy_list(
     )
     if not nodes:
         nodes = db.query(Node).filter(Node.is_active.is_(True)).order_by(Node.name).all()
+    form_nodes = [n for n in nodes if n.role == "local"]
     from sqlalchemy.orm import joinedload
 
     users = (
@@ -605,6 +621,7 @@ def proxy_list(
                 "title": APP_TITLE,
                 "admin": admin,
                 "nodes": [],
+                "form_nodes": [],
                 "users": [],
                 "error": flash_err,
                 "flash_ok": flash_ok or request.query_params.get("msg"),
@@ -620,6 +637,7 @@ def proxy_list(
             "title": APP_TITLE,
             "admin": admin,
             "nodes": nodes,
+            "form_nodes": form_nodes,
             "users": users,
             "error": flash_err,
             "flash_ok": flash_ok or request.query_params.get("msg"),
@@ -637,8 +655,6 @@ async def proxy_create(
     _: None = Depends(require_form_csrf),
     node_id: int = Form(...),
     username: str = Form(...),
-    wifi: str | None = Form(None),
-    mobile: str | None = Form(None),
 ):
     if is_agent_panel():
         master = get_master_public_url(request)
@@ -649,6 +665,7 @@ async def proxy_create(
                 "title": APP_TITLE,
                 "admin": admin,
                 "nodes": [],
+                "form_nodes": [],
                 "users": [],
                 "error": f"На agent-ноде клиентов не создают. Откройте master: {master}/proxy",
                 "is_agent": True,
@@ -660,66 +677,20 @@ async def proxy_create(
     node = db.get(Node, node_id)
     if not node or not node.is_active:
         raise HTTPException(400, "Нода недоступна — дождитесь online или выберите master")
-    do_wifi = wifi == "on"
-    do_mobile = mobile == "on"
-    if not do_wifi and not do_mobile:
-        raise HTTPException(400, "Выберите Wi‑Fi и/или LTE профиль")
+    if node.role != "local":
+        raise HTTPException(400, "Универсальный (Cloudflare) профиль доступен только на master-ноде")
 
     uname = username.strip()
+    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$", uname):
+        raise HTTPException(400, "Недопустимое имя пользователя")
     dup = (
         db.query(ProxyUser)
         .filter(ProxyUser.node_id == node.id, ProxyUser.username == uname)
         .first()
     )
-    api_base = node.api_base
-    if node.role == "local":
-        api_base = api_base or "http://127.0.0.1:8765"
-        result = await asyncio.to_thread(
-            provision_local,
-            uname,
-            wifi=do_wifi,
-            mobile=do_mobile,
-        )
-    else:
-        if not node.api_token:
-            raise HTTPException(400, "Нода ещё не зарегистрирована агентом")
-        if remote_uses_job_queue(node):
-            job = create_provision_job(
-                db,
-                node_id=node.id,
-                username=uname,
-                wifi=do_wifi,
-                mobile=do_mobile,
-            )
-            try:
-                job = await wait_for_job(job.id, timeout_sec=300.0)
-            except TimeoutError as e:
-                result = ProvisionResult(False, str(e))
-            else:
-                if job.status == "failed":
-                    result = ProvisionResult(False, job.error_message or "Ошибка на agent")
-                else:
-                    result = ProvisionResult(
-                        ok=True,
-                        message="OK",
-                        wifi_vless_url=job.wifi_vless_url,
-                        mobile_vless_url=job.mobile_vless_url,
-                        hysteria_url=job.hysteria_url,
-                        wifi_port=job.wifi_port,
-                        uuid=job.uuid,
-                    )
-        else:
-            if not api_base:
-                raise HTTPException(400, "Нода ещё не зарегистрирована агентом")
-            result = await provision_remote(
-                api_base,
-                node.api_token,
-                uname,
-                wifi=do_wifi,
-                mobile=do_mobile,
-            )
 
-    if not result.ok:
+    cf_result = await asyncio.to_thread(provision_cf_local, uname)
+    if not cf_result.ok:
         nodes = db.query(Node).filter(Node.is_active.is_(True)).all()
         users = db.query(ProxyUser).order_by(ProxyUser.created_at.desc()).limit(100).all()
         return templates.TemplateResponse(
@@ -729,8 +700,9 @@ async def proxy_create(
                 "title": APP_TITLE,
                 "admin": admin,
                 "nodes": nodes,
+                "form_nodes": [n for n in nodes if n.role == "local"],
                 "users": users,
-                "error": result.message,
+                "error": cf_result.message,
             },
             status_code=400,
         )
@@ -738,24 +710,26 @@ async def proxy_create(
     pu = dup or ProxyUser(node_id=node.id, username=uname)
     if not dup:
         db.add(pu)
-    pu.has_wifi = do_wifi
-    pu.has_mobile = do_mobile
-    pu.wifi_vless_url = result.wifi_vless_url
-    pu.mobile_vless_url = result.mobile_vless_url
-    pu.hysteria_url = result.hysteria_url
-    pu.wifi_port = result.wifi_port
-    pu.uuid = result.uuid
+    pu.has_wifi = False
+    pu.has_mobile = False
+    pu.wifi_vless_url = None
+    pu.mobile_vless_url = None
+    pu.hysteria_url = None
+    pu.cf_vless_url = cf_result.cf_vless_url
+    pu.wifi_port = None
+    pu.uuid = cf_result.uuid
     pu.exit_country = node.country or node.region or ""
     pu.exit_ip = node_vpn_host(node) or node.public_ip or ""
     db.commit()
     db.refresh(pu)
     ensure_qr_codes_for_user(
         uname,
-        wifi_vless_url=result.wifi_vless_url,
-        mobile_vless_url=result.mobile_vless_url,
-        hysteria_url=result.hysteria_url,
-        has_wifi=do_wifi,
-        has_mobile=do_mobile,
+        wifi_vless_url=None,
+        mobile_vless_url=None,
+        hysteria_url=None,
+        cf_vless_url=cf_result.cf_vless_url,
+        has_wifi=False,
+        has_mobile=False,
     )
     return RedirectResponse(f"/proxy/{pu.id}", status_code=303)
 
@@ -882,12 +856,14 @@ def proxy_detail(
         wifi_vless_url=pu.wifi_vless_url,
         mobile_vless_url=pu.mobile_vless_url,
         hysteria_url=pu.hysteria_url,
+        cf_vless_url=pu.cf_vless_url,
         has_wifi=pu.has_wifi,
         has_mobile=pu.has_mobile,
     )
     qr_wifi = qr_png_path(pu.username, "wifi")
     qr_mobile = qr_png_path(mob_name, "mobile")
     qr_hy2 = qr_png_path(mob_name, "hy2") if pu.has_mobile else None
+    qr_cf = qr_png_path(pu.username, "cf") if pu.cf_vless_url else None
     mobile_vless_ip_url = None
     if pu.mobile_vless_url and node and (node.public_ip or "").strip():
         ip = node.public_ip.strip()
@@ -910,6 +886,7 @@ def proxy_detail(
             "qr_wifi": qr_wifi.name if qr_wifi else None,
             "qr_mobile": qr_mobile.name if qr_mobile else None,
             "qr_hy2": qr_hy2.name if qr_hy2 else None,
+            "qr_cf": qr_cf.name if qr_cf else None,
             "mobile_vless_ip_url": mobile_vless_ip_url,
             "flash_err": flash_err,
         },
@@ -936,6 +913,7 @@ async def proxy_delete(
             pu.username,
             wifi=pu.has_wifi,
             mobile=pu.has_mobile,
+            cf=bool(pu.cf_vless_url),
         )
     else:
         if not node.api_token:
@@ -1080,6 +1058,171 @@ def certs_settings(
     settings.auto_renew_days = max(1, min(30, auto_renew_days))
     db.commit()
     return RedirectResponse("/certs?msg=Настройки автопродления сохранены", status_code=303)
+
+
+# --- Cloudflare (обход блокировок через CDN) ---
+
+
+@app.get("/cloudflare", response_class=HTMLResponse)
+async def cloudflare_page(
+    request: Request,
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+    msg: str | None = None,
+    err: str | None = None,
+):
+    settings = get_settings(db)
+    local = db.query(Node).filter(Node.role == "local").first()
+    server = await asyncio.to_thread(cf_server_status)
+
+    zone_info: dict | None = None
+    ssl_mode: str | None = None
+    name_servers: list[str] = []
+    if settings.cf_api_token and settings.cf_zone:
+        zres = await get_zone(settings.cf_api_token, settings.cf_zone)
+        if zres.ok and zres.data:
+            zone_info = {
+                "id": zres.data.get("id"),
+                "name": zres.data.get("name"),
+                "status": zres.data.get("status"),
+            }
+            name_servers = zres.data.get("name_servers") or []
+            sres = await get_ssl_mode(settings.cf_api_token, zone_info["id"])
+            if sres.ok and isinstance(sres.data, dict):
+                ssl_mode = sres.data.get("value")
+
+    return templates.TemplateResponse(
+        "cloudflare.html",
+        {
+            "request": request,
+            "title": APP_TITLE,
+            "admin": admin,
+            "settings": settings,
+            "server": server,
+            "local_ip": (local.public_ip if local else "") or "",
+            "zone_info": zone_info,
+            "ssl_mode": ssl_mode,
+            "name_servers": name_servers,
+            "origin_check": None,
+            "flash_ok": msg,
+            "flash_err": err,
+        },
+    )
+
+
+@app.post("/cloudflare/settings")
+async def cloudflare_settings(
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+    _: None = Depends(require_form_csrf),
+    cf_enabled: str | None = Form(None),
+    cf_api_token: str = Form(""),
+    cf_zone: str = Form(""),
+    cf_hostname: str = Form(""),
+    cf_path: str = Form("/ws-akuma67"),
+    cf_port: int = Form(8443),
+    cf_ssl_mode: str = Form("full"),
+):
+    settings = get_settings(db)
+    settings.cf_enabled = cf_enabled == "on"
+    if cf_api_token.strip():
+        settings.cf_api_token = cf_api_token.strip()
+    settings.cf_zone = cf_zone.strip().lower().rstrip(".")
+    settings.cf_hostname = normalize_hostname(cf_hostname, settings.cf_zone)
+    p = cf_path.strip()
+    settings.cf_path = p if p.startswith("/") else "/" + p
+    settings.cf_port = max(1, min(65535, int(cf_port or 8443)))
+    sec = cf_ssl_mode.strip().lower()
+    settings.cf_ssl_mode = sec if sec in ("off", "flexible", "full", "strict", "full(strict)") else "full"
+    db.commit()
+
+    write_cf_env(
+        host=settings.cf_hostname or "",
+        path=settings.cf_path,
+        port=settings.cf_port,
+        zone=settings.cf_zone,
+    )
+    ok, out = await asyncio.to_thread(ensure_cf_server)
+    if settings.cf_enabled and not ok:
+        return RedirectResponse(
+            f"/cloudflare?err={quote('xray-cf не поднялся: ' + out[:120])}",
+            status_code=303,
+        )
+    return RedirectResponse("/cloudflare?msg=Настройки Cloudflare сохранены", status_code=303)
+
+
+@app.post("/cloudflare/setup")
+async def cloudflare_setup(
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+    _: None = Depends(require_form_csrf),
+):
+    settings = get_settings(db)
+    token = settings.cf_api_token.strip()
+    zone_name = settings.cf_zone
+    if not token:
+        return RedirectResponse("/cloudflare?err=Сначала сохраните API-токен Cloudflare", status_code=303)
+    if not zone_name:
+        return RedirectResponse("/cloudflare?err=Укажите зону (домен) в Cloudflare", status_code=303)
+
+    zres = await get_zone(token, zone_name)
+    if not zres.ok:
+        return RedirectResponse(f"/cloudflare?err={quote(zres.message[:180])}", status_code=303)
+    zone_id = zres.data["id"]
+
+    hostname = settings.cf_hostname or normalize_hostname("vpn", zone_name)
+    if not hostname:
+        return RedirectResponse("/cloudflare?err=Не определён hostname для VPN", status_code=303)
+
+    local = db.query(Node).filter(Node.role == "local").first()
+    origin_ip = (local.public_ip if local else "").strip()
+    if not re.match(r"^\d+\.\d+\.\d+\.\d+$", origin_ip):
+        origin_ip = await asyncio.to_thread(detect_egress_public_ip)
+    if not re.match(r"^\d+\.\d+\.\d+\.\d+$", origin_ip):
+        return RedirectResponse("/cloudflare?err=Не удалось определить IPv4 сервера", status_code=303)
+
+    d = await ensure_dns_record(token, zone_id, hostname, origin_ip, proxied=True)
+    if not d.ok:
+        return RedirectResponse(f"/cloudflare?err={quote(d.message[:180])}", status_code=303)
+
+    o = await ensure_origin_rule(token, zone_id, hostname, settings.cf_port)
+    if not o.ok:
+        return RedirectResponse(f"/cloudflare?err={quote(o.message[:180])}", status_code=303)
+
+    s = await set_ssl_mode(token, zone_id, settings.cf_ssl_mode or "full")
+    if not s.ok:
+        return RedirectResponse(f"/cloudflare?err={quote(s.message[:180])}", status_code=303)
+
+    settings.cf_hostname = hostname
+    settings.cf_zone = zone_name
+    db.commit()
+    write_cf_env(
+        host=hostname,
+        path=settings.cf_path,
+        port=settings.cf_port,
+        zone=zone_name,
+    )
+    await asyncio.to_thread(ensure_cf_server)
+    msg = (
+        f"Готово: DNS {hostname}→{origin_ip} (proxied), Origin Rule → :{settings.cf_port}, "
+        f"SSL={settings.cf_ssl_mode}. Не забудьте перенести NS у регистратора, если ещё не сделали."
+    )
+    return RedirectResponse("/cloudflare?msg=" + quote(msg), status_code=303)
+
+
+@app.post("/cloudflare/check")
+async def cloudflare_check(
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+    _: None = Depends(require_form_csrf),
+):
+    settings = get_settings(db)
+    if not settings.cf_hostname:
+        return RedirectResponse("/cloudflare?err=Укажите hostname (например vpn.домен)", status_code=303)
+    res = await check_origin(settings.cf_hostname, settings.cf_path)
+    if res.ok:
+        return RedirectResponse(f"/cloudflare?msg={quote(res.message)}", status_code=303)
+    return RedirectResponse(f"/cloudflare?err={quote(res.message)}", status_code=303)
 
 
 @app.get("/profile", response_class=HTMLResponse)
@@ -1322,6 +1465,7 @@ async def api_agent_job_result(request: Request, db: Session = Depends(get_db)):
         job.wifi_vless_url = body.get("wifi_vless_url")
         job.mobile_vless_url = body.get("mobile_vless_url")
         job.hysteria_url = body.get("hysteria_url")
+        job.cf_vless_url = body.get("cf_vless_url")
         job.wifi_port = body.get("wifi_port")
         job.uuid = body.get("uuid")
         imported = body.get("imported_clients")

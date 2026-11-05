@@ -1,6 +1,6 @@
 # VLESS Manager Pro
 
-Платформа для развёртывания VPN на **Xray-core**: выдача конфигов **VLESS** (Wi‑Fi / LTE), **Hysteria2**, **REALITY**, QR-коды, **web-панель**, **multi-node** через агентов, **systemd**, Let's Encrypt.
+Платформа для развёртывания VPN на **Xray-core**: один универсальный профиль **VLESS + WebSocket через Cloudflare** (работает и на Wi‑Fi, и на мобильном интернете, обходит блокировки по IP), QR-коды, **web-панель**, **multi-node** через агентов, **systemd**, Let's Encrypt.
 
 Репозиторий: [github.com/sweetpotatohack/vless-manager](https://github.com/sweetpotatohack/vless-manager)
 
@@ -13,7 +13,7 @@
 | Раздел | Описание |
 |--------|----------|
 | **Обзор** | Сводка, **мониторинг CPU/RAM/диск** по каждой ноде, выдача конфигов |
-| **Proxy** | Создание пользователя, выбор ноды (master / agent), список клиентов |
+| **Proxy** | Создание пользователя, универсальный профиль + QR, список клиентов |
 | **Ноды** | Master + remote agent, DNS VPN, порты firewall, install.sh |
 | **Сертификаты** | Let's Encrypt, autoprenew, Hysteria2, certbot timer |
 | **Кабинет** | Пароль admin, Telegram / SMTP оповещения |
@@ -53,7 +53,7 @@
 | Требование | Зачем |
 |------------|--------|
 | VPS с **root** (Debian / Ubuntu) | Установка Xray, certbot, панели |
-| Домен с **A-записью** на IP VPS | Let's Encrypt для VLESS TLS и Hy2 |
+| Домен с **A-записью** на IP VPS | Let's Encrypt для VLESS и панели |
 | Email для Let's Encrypt | Выпуск/продление сертификата |
 | Открытые порты (см. ниже) | VPN + панель + certbot |
 | **Git** на сервере | `git clone` репозитория |
@@ -63,11 +63,12 @@
 | Порт | Протокол | Назначение |
 |------|----------|------------|
 | **80/tcp** | HTTP | Выпуск/renew LE (standalone) |
-| **443/tcp** | TCP | VLESS REALITY (LTE) |
-| **25001/udp** | UDP | Hysteria2 (LTE) |
-| **25000–45000/tcp** | TCP | VLESS Wi‑Fi (по одному на клиента) |
+| **8443/tcp** | TCP | origin для Cloudflare (xray-cf, универсальный профиль) |
 | **8765/tcp** | HTTPS | Web-панель (основной вход) |
 | **8766/tcp** | HTTP | Панель без TLS (если LE сломался) |
+| 443/tcp · 25001/udp · 25000–45000/tcp | TCP/UDP | устаревшие прямые профили (REALITY / Hy2 / Wi‑Fi), для совместимости |
+
+> Клиенту наружу открывается только стандартный **443/tcp** (Cloudflare edge). Порт `8443` — только для Cloudflare → origin, в клиентских ссылках не используется.
 
 ### Установка за 3 шага
 
@@ -99,7 +100,8 @@ git clone --depth 1 https://github.com/sweetpotatohack/vless-manager.git /tmp/vl
 | 2 | Логин **`admin`** / **`admin`** → сразу смените пароль в **Кабинет** |
 | 3 | **Ноды** → укажите **страну** для локальной (master) ноды |
 | 4 | **Сертификаты** → проверьте срок LE, при необходимости **Синхронизировать Hysteria** |
-| 5 | **Proxy** → создайте тестового пользователя (Wi‑Fi / LTE) на master-ноде |
+| 5 | **Cloudflare** → вставьте API-токен, сохраните, нажмите **«Подготовить домен»** |
+| 6 | **Proxy** → создайте пользователя — один универсальный профиль + QR |
 
 Полезные команды:
 
@@ -118,20 +120,24 @@ journalctl -u vless-panel -u vless-xray -f
 | Компонент | Назначение |
 |-----------|------------|
 | **`install_vless_manager.sh`** | Единая установка: Xray, TLS, firewall, sample-клиент, **web-панель**, systemd |
-| **`vless_manager.sh`** | CLI/меню: клиенты, mobile (REALITY + Hy2), QR, iptables |
+| **`vless_manager.sh`** | CLI/меню: универсальный Cloudflare профиль, QR, устаревшие Wi‑Fi/REALITY/Hy2 |
 | **`vless-servers`** | Запуск/остановка inbound Xray по конфигам клиентов |
 | **`panel/`** | Web **Control Panel** (FastAPI): Proxy, ноды, сертификаты, кабинет админа |
 | **Агент на VPS** | Удалённая нода: тот же стек + API для master |
 
-### Профили для клиентов
+### Профиль клиента (универсальный)
 
-| Профиль | Протокол | Порт | Когда использовать |
-|---------|----------|------|---------------------|
-| **Wi‑Fi** | VLESS + TLS (LE) | 25000–45000/tcp | Дом, офис, Wi‑Fi |
-| **LTE (основной)** | Hysteria2 | 25001/udp | Мобильный интернет |
-| **LTE (запасной)** | VLESS + REALITY + Vision | 443/tcp | Если UDP режут |
+Для каждого пользователя выдаётся **один универсальный профиль** — он работает и на Wi‑Fi, и на мобильном интернете:
 
-Формат Hy2: `hysteria2://PASSWORD@domain:25001?sni=domain`
+| Профиль | Протокол | Порт клиента | Как работает |
+|---------|----------|--------------|--------------|
+| **Universal** | VLESS + WebSocket + TLS | 443/tcp | Клиент → Cloudflare:443 → сервер:8443 (xray-cf) |
+
+```text
+vless://UUID@vpn.ВАШ_ДОМЕН:443?encryption=none&security=tls&sni=vpn.ВАШ_ДОМЕН&fp=chrome&type=ws&path=%2Fws-akuma67&host=vpn.ВАШ_ДОМЕН#USER-cf
+```
+
+Плюс QR-код для импорта в v2rayN / v2rayTun. В клиенте: **MUX выключить**.
 
 ---
 
@@ -142,19 +148,20 @@ journalctl -u vless-panel -u vless-xray -f
 | Вкладка | Функции |
 |---------|---------|
 | **Обзор** | Ноды, число клиентов, срок сертификатов |
-| **Proxy** | Имя пользователя → **нода** → Wi‑Fi / LTE → ссылки + QR |
+| **Proxy** | Имя пользователя → **master-нода** → универсальный профиль + QR |
+| **Cloudflare** | API-токен, зона, hostname, **«Подготовить домен»**, проверка origin |
 | **Ноды** | Страна master, **генерация агента**, install-команда, статус online |
 | **Сертификаты** | LE, renew, новый DNS, sync Hy2, автопродление |
 | **Кабинет** | Пароль, Telegram / SMTP оповещения |
 
 ### Выдача конфига на master (локальная нода)
 
-1. **Proxy** → имя (латиница, без пробелов).
-2. Нода **master / local** (страна и IP вашего сервера).
-3. Отметьте **Wi‑Fi** и/или **LTE**.
-4. Дождитесь генерации (~30–90 с) → ссылки и QR.
+1. **Cloudflare** → API-токен + зона → **Сохранить** → **«Подготовить домен»**.
+2. **Proxy** → имя (латиница, без пробелов) → нода **master**.
+3. Нажмите **«Создать универсальный профиль + QR»** (~10–30 с).
+4. Откройте карточку клиента — там `vless://` ссылка и QR.
 
-Перед созданием проверяются свободные порты; дубликаты имён на одной ноде запрещены.
+Универсальный профиль выдаётся только на **master** (Cloudflare проксирует на origin master). Дубликаты имён на одной ноде запрещены.
 
 ---
 
@@ -226,11 +233,15 @@ curl -fsSL 'https://vpn.example.com:8765/api/v1/agent/install.sh?token=TOKEN' | 
 
 #### 5. Выдача VPN на удалённой ноде
 
-1. **Proxy** → имя пользователя.
-2. **Нода** — выберите **agent** (не master).
-3. Wi‑Fi / LTE → **Создать**.
+Универсальный (Cloudflare) профиль выдаётся только на **master**. На remote-agent остаются прямые профили Wi‑Fi/LTE — их создают через API/CLI на самой ноде:
 
-Master отправит на agent `POST /api/v1/provision`; конфиги и QR появятся в панели как обычно. VLESS-ссылки будут с **доменом/IP agent** и портом inbound на agent.
+```bash
+# на agent-ноде
+/opt/vless-manager/vless_manager.sh cli create-wifi USER
+/opt/vless-manager/vless_manager.sh cli create-mobile USER
+```
+
+Master синхронизирует их в каталог (**Proxy → Синхронизировать с нод**). VLESS-ссылки будут с **доменом/IP agent** и портом inbound на agent.
 
 ### Если нода не становится online
 
@@ -265,10 +276,11 @@ sudo ./install_vless_manager.sh --remote-agent
 | Служба | Описание |
 |--------|----------|
 | `vless-xray.service` | Все VLESS inbound из `/etc/vless-manager/clients/` |
+| `xray-cf.service` | Универсальный профиль: VLESS + WS на `:8443` (за Cloudflare) |
 | `vless-panel.service` | HTTPS :8765 + HTTP fallback :8766, API агента |
-| `vless-agent.service` | Alias той же unit (на remote-нодах) |
-| `xray-reality.service` | REALITY :443 (mobile) |
-| `hysteria-server.service` | Hysteria2 :25001 |
+| `vless-agent.service` | Alias той же unit (только на remote-нодах) |
+| `xray-reality.service` | REALITY :443 (устаревший mobile) |
+| `hysteria-server.service` | Hysteria2 :25001 (устаревший запасной) |
 
 ```bash
 sudo systemctl enable --now vless-xray vless-panel
@@ -282,9 +294,13 @@ sudo systemctl restart vless-panel
 
 ```bash
 vless-manager                    # интерактивное меню
+/opt/vless-manager/vless_manager.sh cli create-cf USERNAME     # универсальный Cloudflare профиль
+/opt/vless-manager/vless_manager.sh cli delete-cf USERNAME
+/opt/vless-manager/vless_manager.sh cli ensure-cf              # поднять xray-cf
+/opt/vless-manager/vless_manager.sh cli cf-status              # статус CF-обхода
+# устаревшие прямые профили (для совместимости):
 /opt/vless-manager/vless_manager.sh cli create-wifi USERNAME
 /opt/vless-manager/vless_manager.sh cli create-mobile USERNAME
-/opt/vless-manager/vless_manager.sh cli delete-client USERNAME
 /opt/vless-manager/vless_manager.sh repair-ports
 ```
 
@@ -332,6 +348,8 @@ vless-manager                    # интерактивное меню
 
 /etc/vless-manager/
 ├── tls.env
+├── cf.env                     # hostname/path/port Cloudflare обхода
+├── cf-clients/*.uuid          # клиенты универсального профиля
 ├── clients/*.json
 ├── urls/*.txt
 ├── qr-codes/*.png
@@ -413,6 +431,60 @@ ss -tulnp | egrep ':(443|8765|8766|25001|250[0-9]{2})'
 curl -sSk https://127.0.0.1:8765/api/v1/health
 curl -sS http://127.0.0.1:8766/api/v1/health
 ```
+
+---
+
+## Обход блокировок через Cloudflare (универсальный профиль)
+
+Если провайдер/регион режет прямой доступ к IP сервера (SYN-пакеты не доходят), вход выносится за IP Cloudflare. Это и есть **универсальный профиль** для клиентов — один конфиг для Wi‑Fi и мобильного интернета.
+
+```text
+Клиент → Cloudflare:443 (TLS, SNI = vpn.<домен>) → сервер:8443 (VLESS + WS + TLS)
+```
+
+### Автоматическая настройка (панель)
+
+1. Перенесите NS домена на Cloudflare (у регистратора) и дождитесь статуса **Active**.
+2. Cloudflare → **My Profile → API Tokens → Create Token** → шаблон **Edit zone DNS**, Zone Resources → Include → ваш домен.
+3. В панели откройте **Cloudflare**:
+   - вставьте API-токен;
+   - зона = `ваш_домен` (например `astrainalog.ru`);
+   - hostname = `vpn.ваш_домен` (подставляется сам), path `/ws-akuma67`, порт origin `8443`, SSL `Full`;
+   - **Сохранить и поднять xray-cf**.
+4. Нажмите **«Подготовить домен»** — панель через Cloudflare API создаст:
+   - DNS `A vpn → IP сервера` с проксированием (оранжевое облако);
+   - **Origin Rule**: `Hostname = vpn.<домен>` → destination port `8443`;
+   - SSL/TLS режим `Full`.
+5. Нажмите **«Проверить origin»**: HTTP `400/404/502/503` = Cloudflare достучался до origin; `521–524` = origin недоступен.
+
+### Выдача клиенту
+
+В **Proxy** создайте пользователя → кнопка **«Создать универсальный профиль + QR»**. В карточке клиента будет ссылка и QR:
+
+```text
+vless://UUID@vpn.ВАШ_ДОМЕН:443?encryption=none&security=tls&sni=vpn.ВАШ_ДОМЕН&fp=chrome&type=ws&path=%2Fws-akuma67&host=vpn.ВАШ_ДОМЕН#USER-cf
+```
+
+В v2rayN/v2rayTun: **MUX выключить**. WS помечен в Xray как deprecated (рекомендуют XHTTP), но корректно работает в v2rayN.
+
+### Ручная настройка (без панели)
+
+Тот же результат дают команды CLI:
+
+```bash
+/opt/vless-manager/vless_manager.sh cli ensure-cf        # unit + ufw 8443 + конфиг xray-cf
+/opt/vless-manager/vless_manager.sh cli create-cf USER   # клиент + ссылка + QR
+```
+
+А в Cloudflare вручную: запись `A vpn → IP` (proxied), **Origin Rule** `Hostname = vpn.<домен>` → порт `8443`, SSL-режим `Full`.
+
+### Серверная часть (как это устроено)
+
+- Конфиг `/etc/xray-cf/config.json` — VLESS + WebSocket + TLS, слушает `:8443`.
+- Юнит `xray-cf.service` (systemd, автозапуск).
+- Клиенты — `/etc/vless-manager/cf-clients/*.uuid`, конфиг пересобирается автоматически при создании/удалении.
+- Сертификат — Let's Encrypt из `tls.env` (тот же, что для панели); режим `Full` не валидирует origin-сертификат.
+- Firewall: `ufw allow 8443/tcp comment 'cloudflare-ws'`.
 
 ---
 

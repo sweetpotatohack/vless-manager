@@ -39,7 +39,7 @@ def create_import_all_job(db: Session, *, node_id: int) -> AgentJob:
     job = AgentJob(
         node_id=node_id,
         job_type="import_all",
-        username="__import__",
+        username="catalog",
         has_wifi=False,
         has_mobile=False,
         status="pending",

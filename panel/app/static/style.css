@@ -119,6 +119,7 @@ body {
   flex-shrink: 0;
 }
 .nav-dot-red { background: var(--red-bright); box-shadow: 0 0 6px var(--red); }
+.nav-dot-orange { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
 
 .nav a:hover {
   border-color: rgba(59, 130, 246, 0.35);
@@ -459,6 +460,13 @@ tr.row-active td { background: rgba(59, 130, 246, 0.06); }
 }
 
 .checkbox-row { display: flex; flex-wrap: wrap; gap: 1.25rem; margin-bottom: 1rem; }
+
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1rem;
+  width: 100%;
+}
 
 .grid-3 {
   display: grid;

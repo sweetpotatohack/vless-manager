@@ -35,6 +35,14 @@ readonly HYSTERIA_ENV="$CONFIG_DIR/hysteria.env"
 readonly HYSTERIA_CERT_DIR="/etc/hysteria/certs"
 readonly HYSTERIA_PORT=25001
 readonly VLESS_NEVER_PORTS=(80 443 8080 8443 8000 8888 3000 5000 3333 53 853 4443 9443 9444)
+# Cloudflare обход (VLESS + WebSocket): общий inbound :8443, клиент стучится на CF :443
+readonly CF_ENV="$CONFIG_DIR/cf.env"
+readonly CF_CLIENT_DIR="$CONFIG_DIR/cf-clients"
+readonly CF_CONFIG_FILE="/etc/xray-cf/config.json"
+readonly CF_SERVICE="xray-cf.service"
+readonly CF_DEFAULT_PATH="/ws-akuma67"
+readonly CF_DEFAULT_PORT=8443
+readonly CF_PUBLIC_PORT=443
 
 # Colors
 readonly RED='\033[0;31m'
@@ -345,6 +353,227 @@ build_hysteria_url() {
     load_hysteria_env
     host=$(get_public_host)
     echo "hysteria2://${HY2_PASS}@${host}:${HYSTERIA_PORT}?sni=${host}#${client_name}-hy2"
+}
+
+# ═══════════ Cloudflare обход (VLESS + WebSocket) ═══════════
+load_cf_env() {
+    CF_HOST=""
+    CF_PATH="$CF_DEFAULT_PATH"
+    CF_PORT="$CF_DEFAULT_PORT"
+    CF_ZONE=""
+    [[ -f "$CF_ENV" ]] && source "$CF_ENV" 2>/dev/null || true
+    CF_HOST="${CF_HOST:-}"
+    CF_PATH="${CF_PATH:-$CF_DEFAULT_PATH}"
+    CF_PORT="${CF_PORT:-$CF_DEFAULT_PORT}"
+    CF_ZONE="${CF_ZONE:-}"
+    [[ "$CF_PATH" == /* ]] || CF_PATH="/$CF_PATH"
+}
+
+write_cf_env() {
+    local host="$1" path="${2:-$CF_DEFAULT_PATH}" port="${3:-$CF_DEFAULT_PORT}" zone="${4:-}"
+    umask 077
+    mkdir -p "$CONFIG_DIR"
+    cat > "$CF_ENV" << EOF
+CF_HOST=${host}
+CF_PATH=${path}
+CF_PORT=${port}
+CF_ZONE=${zone}
+EOF
+    chmod 600 "$CF_ENV"
+}
+
+cf_configured() {
+    load_cf_env
+    [[ -n "$CF_HOST" ]]
+}
+
+cf_cert_paths() {
+    # Полный путь для xray-cf: LE из tls.env, иначе самоподпись для CF_HOST
+    load_tls_env
+    if tls_uses_letsencrypt; then
+        echo "$LE_FULLCHAIN|$LE_PRIVKEY"
+        return 0
+    fi
+    load_cf_env
+    local crt="$CF_CLIENT_DIR/cf-selfsigned.crt" key="$CF_CLIENT_DIR/cf-selfsigned.key"
+    if [[ ! -f "$crt" || ! -f "$key" ]]; then
+        mkdir -p "$CF_CLIENT_DIR"
+        openssl req -x509 -nodes -newkey rsa:2048 -keyout "$key" -out "$crt" -days 8250 \
+            -subj "/CN=${CF_HOST:-cf.local}" 2>/dev/null || true
+        chmod 600 "$key" 2>/dev/null || true
+        chmod 644 "$crt" 2>/dev/null || true
+    fi
+    echo "$crt|$key"
+    return 0
+}
+
+restart_cf_service() {
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl enable "$CF_SERVICE" >/dev/null 2>&1 || true
+    if systemctl is-active --quiet "$CF_SERVICE" 2>/dev/null; then
+        systemctl restart "$CF_SERVICE" 2>/dev/null || true
+    else
+        systemctl start "$CF_SERVICE" 2>/dev/null || true
+    fi
+}
+
+ensure_cf_service() {
+    load_cf_env
+    mkdir -p "$CF_CLIENT_DIR" /etc/xray-cf
+    cat > /etc/systemd/system/xray-cf.service << 'UNIT'
+[Unit]
+Description=Xray VLESS WS for Cloudflare (vless-manager)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/xray run -config /etc/xray-cf/config.json
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qiE 'Status:\s+active'; then
+        ufw allow "${CF_PORT}/tcp" comment 'cloudflare-ws' 2>/dev/null || true
+    fi
+    if [[ ! -f "$CF_CONFIG_FILE" ]]; then
+        rebuild_cf_hub
+    fi
+    restart_cf_service
+}
+
+register_cf_client() {
+    local client_name="$1" uuid="$2"
+    mkdir -p "$CF_CLIENT_DIR"
+    echo "$uuid" > "$CF_CLIENT_DIR/${client_name}.uuid"
+}
+
+cf_is_client() {
+    local client_name="$1"
+    [[ -f "$CF_CLIENT_DIR/${client_name}.uuid" ]]
+}
+
+rebuild_cf_hub() {
+    load_cf_env
+    local certs crt key
+    certs=$(cf_cert_paths)
+    crt="${certs%%|*}"
+    key="${certs##*|}"
+    [[ -n "$CF_HOST" ]] || return 0
+    mkdir -p "$CF_CLIENT_DIR" /etc/xray-cf
+    CF_CFG_PATH="$CF_CONFIG_FILE" CF_MDIR="$CF_CLIENT_DIR" CF_HOST="$CF_HOST" \
+    CF_PATH="$CF_PATH" CF_PORT="$CF_PORT" CF_CRT="$crt" CF_KEY="$key" \
+    python3 << 'PY'
+import json, os, glob
+cfg_path = os.environ["CF_CFG_PATH"]
+mdir = os.environ["CF_MDIR"]
+host = os.environ.get("CF_HOST", "")
+path = os.environ.get("CF_PATH", "/ws-akuma67")
+port = int(os.environ.get("CF_PORT", "8443"))
+crt = os.environ.get("CF_CRT", "")
+key = os.environ.get("CF_KEY", "")
+
+clients = []
+for p in sorted(glob.glob(mdir + "/*.uuid")):
+    name = os.path.basename(p).replace(".uuid", "")
+    with open(p) as f:
+        uuid = f.read().strip()
+    if uuid:
+        clients.append({"id": uuid, "email": f"{name}@cf.local"})
+
+cfg = {
+    "log": {"loglevel": "warning"},
+    "inbounds": [{
+        "listen": "0.0.0.0",
+        "port": port,
+        "protocol": "vless",
+        "settings": {"clients": clients, "decryption": "none"},
+        "streamSettings": {
+            "network": "ws",
+            "security": "tls",
+            "tlsSettings": {
+                "certificates": [{"certificateFile": crt, "keyFile": key}],
+                "minVersion": "1.2",
+                "alpn": ["http/1.1"]
+            },
+            "wsSettings": {"path": path}
+        },
+        "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"]}
+    }],
+    "outbounds": [{"protocol": "freedom", "settings": {}}]
+}
+with open(cfg_path, "w") as f:
+    json.dump(cfg, f, indent=2)
+    f.write("\n")
+PY
+    restart_cf_service
+}
+
+build_cf_url() {
+    local client_name="$1" uuid="$2"
+    load_cf_env
+    local path_enc
+    path_enc=$(printf '%s' "$CF_PATH" | sed 's|/|%2F|g')
+    echo "vless://${uuid}@${CF_HOST}:${CF_PUBLIC_PORT}?encryption=none&security=tls&sni=${CF_HOST}&fp=chrome&type=ws&path=${path_enc}&host=${CF_HOST}#${client_name}-cf"
+}
+
+create_cf_config() {
+    local client_name="$1"
+    [[ -n "$client_name" ]] || { echo -e "${RED}Имя клиента не может быть пустым!${NC}"; return 1; }
+    cf_configured || { echo -e "${RED}Cloudflare не настроен (cf.env). Сначала настройте CF в панели.${NC}"; return 1; }
+    cf_is_client "$client_name" && { echo -e "${RED}CF-конфиг для $client_name уже существует!${NC}"; return 1; }
+    ensure_cf_service || { echo -e "${RED}Не удалось поднять xray-cf.${NC}"; return 1; }
+
+    local uuid vless_url qr_path=""
+    uuid=$(generate_uuid)
+    register_cf_client "$client_name" "$uuid"
+    rebuild_cf_hub
+    vless_url=$(build_cf_url "$client_name" "$uuid")
+    echo "$vless_url" > "$CONFIG_DIR/urls/${client_name}-cf.txt"
+    if generate_qr_code "$vless_url" "${client_name}-cf"; then
+        qr_path="$QR_DIR/${client_name}-cf.png"
+    fi
+    init_database
+    sqlite3 "$CONFIG_DIR/clients.db" << EOF
+INSERT OR REPLACE INTO clients (name, uuid, port, config_path, url, qr_path)
+VALUES ('${client_name}-cf', '$uuid', $CF_PUBLIC_PORT, '$CF_CONFIG_FILE', '$vless_url', '$qr_path');
+EOF
+    echo -e "${GREEN}✅ Cloudflare WS конфиг: $client_name${NC}"
+    echo -e "${WHITE}$vless_url${NC}"
+    log "INFO" "Cloudflare WS client $client_name (UUID: $uuid)"
+    return 0
+}
+
+delete_cf_client() {
+    local client_name="$1"
+    [[ -n "$client_name" ]] || return 1
+    rm -f "$CF_CLIENT_DIR/${client_name}.uuid"
+    rm -f "$CONFIG_DIR/urls/${client_name}-cf.txt"
+    rm -f "$QR_DIR/${client_name}-cf.png"
+    if [[ -f "$CONFIG_DIR/clients.db" ]]; then
+        sqlite3 "$CONFIG_DIR/clients.db" "DELETE FROM clients WHERE name='${client_name}-cf';" 2>/dev/null || true
+    fi
+    rebuild_cf_hub
+    log "INFO" "Удалён Cloudflare WS клиент: $client_name"
+    return 0
+}
+
+cf_status() {
+    load_cf_env
+    local active="inactive"
+    systemctl is-active --quiet "$CF_SERVICE" 2>/dev/null && active="active"
+    local count=0
+    [[ -d "$CF_CLIENT_DIR" ]] && count=$(find "$CF_CLIENT_DIR" -maxdepth 1 -name '*.uuid' 2>/dev/null | wc -l | tr -d ' ')
+    echo "enabled=$([[ -n "$CF_HOST" ]] && echo 1 || echo 0)"
+    echo "host=${CF_HOST}"
+    echo "path=${CF_PATH}"
+    echo "port=${CF_PORT}"
+    echo "zone=${CF_ZONE}"
+    echo "service=${active}"
+    echo "clients=${count}"
 }
 
 # Отдельный inbound REALITY :443 → /etc/xray-reality/config.json (как kibervpn)
@@ -2176,6 +2405,24 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                 create_mobile_vless_config "$name"
                 exit $?
                 ;;
+            create-cf)
+                [[ -n "$name" ]] || { echo "usage: cli create-cf NAME" >&2; exit 2; }
+                create_cf_config "$name"
+                exit $?
+                ;;
+            delete-cf)
+                [[ -n "$name" ]] || { echo "usage: cli delete-cf NAME" >&2; exit 2; }
+                delete_cf_client "$name"
+                exit $?
+                ;;
+            ensure-cf)
+                ensure_cf_service
+                exit $?
+                ;;
+            cf-status)
+                cf_status
+                exit 0
+                ;;
             delete-client)
                 local wifi_flag="${4:-1}" mobile_flag="${5:-1}"
                 [[ -n "$name" ]] || { echo "usage: cli delete-client NAME [wifi 0|1] [mobile 0|1]" >&2; exit 2; }
@@ -2210,7 +2457,7 @@ EOF
                 exit 0
                 ;;
             *)
-                echo "usage: $0 cli create-wifi|create-mobile|delete-client|set-public-host ..." >&2
+                echo "usage: $0 cli create-wifi|create-mobile|create-cf|delete-client|delete-cf|ensure-cf|cf-status|set-public-host ..." >&2
                 exit 2
                 ;;
         esac

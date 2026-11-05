@@ -36,6 +36,17 @@
 </div>
 {% endif %}
 
+{% if user.cf_vless_url %}
+<div class="card">
+  <h3 style="margin-top:0">★ Универсальный — Cloudflare WebSocket</h3>
+  <p class="hint" style="margin-top:0">Один профиль для Wi‑Fi и мобильного интернета. Клиент подключается к Cloudflare:443, тот проксирует на сервер (обход блокировок). В v2rayN/v2rayTun: MUX выключить.</p>
+  <div class="url-box">{{ user.cf_vless_url }}</div>
+  {% if qr_cf %}
+  <div class="qr-row"><img src="/qr/{{ qr_cf }}" alt="QR Cloudflare WS"></div>
+  {% endif %}
+</div>
+{% endif %}
+
 {% if user.wifi_vless_url %}
 <div class="card">
   <h3 style="margin-top:0">Wi‑Fi / дом — VLESS TLS{% if user.wifi_port %} :{{ user.wifi_port }}{% endif %}</h3>

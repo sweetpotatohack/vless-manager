@@ -85,6 +85,9 @@ def load_local_client_urls(username: str) -> dict[str, str]:
         hy = URL_DIR / f"{username}-hy2.txt"
     if hy.is_file():
         out["hysteria_url"] = hy.read_text().strip()
+    cf = URL_DIR / f"{username}-cf.txt"
+    if cf.is_file():
+        out["cf_vless_url"] = cf.read_text().strip()
     return out
 
 

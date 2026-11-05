@@ -280,6 +280,7 @@ obtain_letsencrypt_certificate() {
         cat > /etc/letsencrypt/renewal-hooks/deploy/vless-manager-restart.sh << 'DEPLOY_EOF'
 #!/bin/bash
 systemctl restart vless-xray.service 2>/dev/null || true
+systemctl restart xray-cf.service 2>/dev/null || true
 /usr/local/bin/vless-servers start 2>/dev/null || true
 DEPLOY_EOF
         chmod +x /etc/letsencrypt/renewal-hooks/deploy/vless-manager-restart.sh
@@ -291,6 +292,30 @@ DEPLOY_EOF
     log_warn "При ошибке с IPv6/2a00:…/404 — удалите запись AAAA в DNS или приведите IPv6 к этому серверу; в Cloudflare включите DNS-only."
     write_tls_env_selfsigned
     return 0
+}
+
+# Дефолты Cloudflare (VLESS + WebSocket): cf.env создаётся, сам xray-cf поднимает панель/CLI
+setup_cloudflare_defaults() {
+    if [[ -f "$CONFIG_DIR/tls.env" ]]; then
+        # shellcheck source=/dev/null
+        source "$CONFIG_DIR/tls.env"
+    fi
+    if [[ "${TLS_MODE:-}" != "letsencrypt" || -z "${PUBLIC_HOST:-}" ]]; then
+        log_info "Cloudflare: нет домена (самоподпись) — cf.env не создаётся; обход настраивается позже в панели (/cloudflare)."
+        return 0
+    fi
+    local zone host
+    zone="$PUBLIC_HOST"
+    host="vpn.${PUBLIC_HOST#*.}"
+    umask 077
+    cat > "$CONFIG_DIR/cf.env" << EOF
+CF_HOST=${host}
+CF_PATH=/ws-akuma67
+CF_PORT=8443
+CF_ZONE=${zone}
+EOF
+    chmod 600 "$CONFIG_DIR/cf.env"
+    log_info "Cloudflare: cf.env → host=${host} path=/ws-akuma67 port=8443 (настройка: панель → /cloudflare)"
 }
 
 install_dependencies() {
@@ -411,6 +436,7 @@ setup_networking() {
             ufw allow 80/tcp comment 'letsencrypt-http-01' 2>/dev/null || ufw allow 80/tcp 2>/dev/null || true
             log_info "ufw: открыт 80/tcp для Let's Encrypt (выпуск и продление HTTP-01)"
         fi
+        ufw allow 8443/tcp comment 'cloudflare-ws' 2>/dev/null || true
         log_info "ufw: TCP ${VLESS_IPT_MIN}-${VLESS_IPT_MAX} (VLESS) — смотрите ufw status numbered"
     else
         if command -v iptables >/dev/null 2>&1; then
@@ -676,6 +702,7 @@ main() {
     setup_database
     setup_networking  # UFW: VLESS + при LE — порт 80
     obtain_letsencrypt_certificate
+    setup_cloudflare_defaults
     create_server_management
     
     cp "$REPO_ROOT/vless_manager.sh" "$INSTALL_DIR/" 2>/dev/null || log_warn "vless_manager.sh не скопирован из $REPO_ROOT"

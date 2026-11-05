@@ -135,7 +135,12 @@ cp -f /etc/systemd/system/vless-panel.service /etc/systemd/system/vless-agent.se
 
 systemctl daemon-reload
 systemctl enable vless-panel.service
-systemctl enable vless-agent.service 2>/dev/null || true
+if [[ "$PANEL_ROLE" == "agent" ]]; then
+  systemctl enable vless-agent.service 2>/dev/null || true
+else
+  # На master vless-agent не нужен: оба юнита одинаковы и дерутся за порты 8765/8766
+  systemctl disable vless-agent.service 2>/dev/null || true
+fi
 systemctl restart vless-panel.service
 
 sleep 1
