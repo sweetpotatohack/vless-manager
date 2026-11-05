@@ -486,6 +486,16 @@ for p in sorted(glob.glob(mdir + "/*.uuid")):
 
 cfg = {
     "log": {"loglevel": "warning"},
+    "dns": {
+        "servers": [
+            {"address": "https://1.1.1.1/dns-query"},
+            {"address": "https://8.8.8.8/dns-query"},
+            "1.1.1.1",
+            "8.8.8.8"
+        ],
+        "queryStrategy": "UseIPv4",
+        "disableCache": False
+    },
     "inbounds": [{
         "listen": "0.0.0.0",
         "port": port,
@@ -503,7 +513,11 @@ cfg = {
         },
         "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"]}
     }],
-    "outbounds": [{"protocol": "freedom", "settings": {}}]
+    "outbounds": [{
+        "protocol": "freedom",
+        "tag": "direct",
+        "settings": {"domainStrategy": "UseIPv4"}
+    }]
 }
 with open(cfg_path, "w") as f:
     json.dump(cfg, f, indent=2)
