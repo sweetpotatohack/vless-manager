@@ -500,14 +500,18 @@ cfg = {
         "protocol": "vless",
         "settings": {"clients": clients, "decryption": "none"},
         "streamSettings": {
-            "network": "ws",
+            "network": "xhttp",
             "security": "tls",
             "tlsSettings": {
                 "certificates": [{"certificateFile": crt, "keyFile": key}],
                 "minVersion": "1.2",
-                "alpn": ["http/1.1"]
+                "alpn": ["h2", "http/1.1"]
             },
-            "wsSettings": {"path": path}
+            "xhttpSettings": {
+                "host": host,
+                "path": path,
+                "mode": "auto"
+            }
         },
         "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"]}
     }],
@@ -537,7 +541,7 @@ build_cf_url() {
     load_cf_env
     local path_enc
     path_enc=$(printf '%s' "$CF_PATH" | sed 's|/|%2F|g')
-    echo "vless://${uuid}@${CF_HOST}:${CF_PUBLIC_PORT}?encryption=none&security=tls&sni=${CF_HOST}&fp=chrome&type=ws&path=${path_enc}&host=${CF_HOST}#${client_name}-cf"
+    echo "vless://${uuid}@${CF_HOST}:${CF_PUBLIC_PORT}?encryption=none&security=tls&sni=${CF_HOST}&fp=chrome&type=xhttp&path=${path_enc}&host=${CF_HOST}#${client_name}-cf"
 }
 
 create_cf_config() {
