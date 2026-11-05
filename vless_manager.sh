@@ -489,9 +489,7 @@ cfg = {
     "dns": {
         "servers": [
             {"address": "https://1.1.1.1/dns-query"},
-            {"address": "https://8.8.8.8/dns-query"},
-            "1.1.1.1",
-            "8.8.8.8"
+            {"address": "https://8.8.8.8/dns-query"}
         ],
         "queryStrategy": "UseIPv4",
         "disableCache": False
@@ -514,12 +512,12 @@ cfg = {
         "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"]}
     }],
     "outbounds": [
-        {"protocol": "dns", "tag": "dns-out"},
         {
             "protocol": "freedom",
             "tag": "direct",
             "settings": {"domainStrategy": "UseIPv4"}
-        }
+        },
+        {"protocol": "dns", "tag": "dns-out"}
     ],
     "routing": {
         "rules": [
