@@ -524,13 +524,17 @@ create_cf_config() {
     local client_name="$1"
     [[ -n "$client_name" ]] || { echo -e "${RED}Имя клиента не может быть пустым!${NC}"; return 1; }
     cf_configured || { echo -e "${RED}Cloudflare не настроен (cf.env). Сначала настройте CF в панели.${NC}"; return 1; }
-    cf_is_client "$client_name" && { echo -e "${RED}CF-конфиг для $client_name уже существует!${NC}"; return 1; }
     ensure_cf_service || { echo -e "${RED}Не удалось поднять xray-cf.${NC}"; return 1; }
 
     local uuid vless_url qr_path=""
-    uuid=$(generate_uuid)
-    register_cf_client "$client_name" "$uuid"
-    rebuild_cf_hub
+    if cf_is_client "$client_name"; then
+        uuid=$(tr -d ' \r\n' < "$CF_CLIENT_DIR/${client_name}.uuid" 2>/dev/null || true)
+    else
+        uuid=$(generate_uuid)
+        register_cf_client "$client_name" "$uuid"
+        rebuild_cf_hub
+    fi
+    [[ -n "$uuid" ]] || { echo -e "${RED}Не удалось получить UUID для $client_name.${NC}"; return 1; }
     vless_url=$(build_cf_url "$client_name" "$uuid")
     echo "$vless_url" > "$CONFIG_DIR/urls/${client_name}-cf.txt"
     if generate_qr_code "$vless_url" "${client_name}-cf"; then
