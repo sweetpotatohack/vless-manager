@@ -513,11 +513,19 @@ cfg = {
         },
         "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"]}
     }],
-    "outbounds": [{
-        "protocol": "freedom",
-        "tag": "direct",
-        "settings": {"domainStrategy": "UseIPv4"}
-    }]
+    "outbounds": [
+        {"protocol": "dns", "tag": "dns-out"},
+        {
+            "protocol": "freedom",
+            "tag": "direct",
+            "settings": {"domainStrategy": "UseIPv4"}
+        }
+    ],
+    "routing": {
+        "rules": [
+            {"type": "field", "port": 53, "outboundTag": "dns-out"}
+        ]
+    }
 }
 with open(cfg_path, "w") as f:
     json.dump(cfg, f, indent=2)
