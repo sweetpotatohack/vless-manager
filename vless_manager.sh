@@ -441,8 +441,9 @@ UNIT
     fi
     if [[ ! -f "$CF_CONFIG_FILE" ]]; then
         rebuild_cf_hub
+    elif ! systemctl is-active --quiet "$CF_SERVICE" 2>/dev/null; then
+        restart_cf_service
     fi
-    restart_cf_service
 }
 
 register_cf_client() {
