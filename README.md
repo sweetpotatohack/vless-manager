@@ -1,6 +1,6 @@
 # VLESS Manager Pro
 
-Платформа для развёртывания VPN на **Xray-core**: один универсальный профиль **VLESS + XHTTP через Cloudflare** (работает и на Wi‑Fi, и на мобильном интернете, обходит блокировки по IP), QR-коды, **web-панель**, **multi-node** через агентов, **systemd**, Let's Encrypt.
+Платформа для развёртывания VPN на **Xray-core**: один универсальный профиль **VLESS + WebSocket через Cloudflare** (работает и на Wi‑Fi, и на мобильном интернете, обходит блокировки по IP), QR-коды, **web-панель**, **multi-node** через агентов, **systemd**, Let's Encrypt.
 
 Репозиторий: [github.com/sweetpotatohack/vless-manager](https://github.com/sweetpotatohack/vless-manager)
 
@@ -131,10 +131,10 @@ journalctl -u vless-panel -u vless-xray -f
 
 | Профиль | Протокол | Порт клиента | Как работает |
 |---------|----------|--------------|--------------|
-| **Universal** | VLESS + XHTTP + TLS | 443/tcp | Клиент → Cloudflare:443 → сервер:8443 (xray-cf) |
+| **Universal** | VLESS + WebSocket + TLS | 443/tcp | Клиент → Cloudflare:443 → сервер:8443 (xray-cf) |
 
 ```text
-vless://UUID@vpn.ВАШ_ДОМЕН:443?encryption=none&security=tls&sni=vpn.ВАШ_ДОМЕН&fp=chrome&type=xhttp&path=%2Fws-akuma67&host=vpn.ВАШ_ДОМЕН#USER-cf
+vless://UUID@vpn.ВАШ_ДОМЕН:443?encryption=none&security=tls&sni=vpn.ВАШ_ДОМЕН&fp=chrome&type=ws&path=%2Fws-akuma67&host=vpn.ВАШ_ДОМЕН#USER-cf
 ```
 
 Плюс QR-код для импорта в v2rayN / v2rayTun. В клиенте: **MUX выключить**.
@@ -276,7 +276,7 @@ sudo ./install_vless_manager.sh --remote-agent
 | Служба | Описание |
 |--------|----------|
 | `vless-xray.service` | Все VLESS inbound из `/etc/vless-manager/clients/` |
-| `xray-cf.service` | Универсальный профиль: VLESS + XHTTP на `:8443` (за Cloudflare) |
+| `xray-cf.service` | Универсальный профиль: VLESS + WS на `:8443` (за Cloudflare) |
 | `vless-panel.service` | HTTPS :8765 + HTTP fallback :8766, API агента |
 | `vless-agent.service` | Alias той же unit (только на remote-нодах) |
 | `xray-reality.service` | REALITY :443 (устаревший mobile) |
@@ -439,7 +439,7 @@ curl -sS http://127.0.0.1:8766/api/v1/health
 Если провайдер/регион режет прямой доступ к IP сервера (SYN-пакеты не доходят), вход выносится за IP Cloudflare. Это и есть **универсальный профиль** для клиентов — один конфиг для Wi‑Fi и мобильного интернета.
 
 ```text
-Клиент → Cloudflare:443 (TLS, SNI = vpn.<домен>) → сервер:8443 (VLESS + XHTTP + TLS)
+Клиент → Cloudflare:443 (TLS, SNI = vpn.<домен>) → сервер:8443 (VLESS + WebSocket + TLS)
 ```
 
 ### Автоматическая настройка (панель)
@@ -462,10 +462,10 @@ curl -sS http://127.0.0.1:8766/api/v1/health
 В **Proxy** создайте пользователя → кнопка **«Создать универсальный профиль + QR»**. В карточке клиента будет ссылка и QR:
 
 ```text
-vless://UUID@vpn.ВАШ_ДОМЕН:443?encryption=none&security=tls&sni=vpn.ВАШ_ДОМЕН&fp=chrome&type=xhttp&path=%2Fws-akuma67&host=vpn.ВАШ_ДОМЕН#USER-cf
+vless://UUID@vpn.ВАШ_ДОМЕН:443?encryption=none&security=tls&sni=vpn.ВАШ_ДОМЕН&fp=chrome&type=ws&path=%2Fws-akuma67&host=vpn.ВАШ_ДОМЕН#USER-cf
 ```
 
-В v2rayN/v2rayTun: **MUX выключить**. Транспорт — **XHTTP** (современный, стабильно держит TCP и UDP, включая DNS).
+В v2rayN/v2rayTun: **MUX выключить**. Транспорт — **WebSocket**. Если в клиенте настроен релей/цепочка (`out1 -> out2`) — отключите её: релей режет UDP/DNS.
 
 ### Ручная настройка (без панели)
 
@@ -497,7 +497,7 @@ ufw allow 8765/tcp comment 'vless-panel-https'
 
 ### Серверная часть (как это устроено)
 
-- Конфиг `/etc/xray-cf/config.json` — VLESS + XHTTP + TLS, слушает `:8443`.
+- Конфиг `/etc/xray-cf/config.json` — VLESS + WebSocket + TLS, слушает `:8443`.
 - Юнит `xray-cf.service` (systemd, автозапуск).
 - Клиенты — `/etc/vless-manager/cf-clients/*.uuid`, конфиг пересобирается автоматически при создании/удалении.
 - Сертификат — Let's Encrypt из `tls.env` (тот же, что для панели); режим `Full` не валидирует origin-сертификат.
