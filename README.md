@@ -478,6 +478,23 @@ vless://UUID@vpn.ВАШ_ДОМЕН:443?encryption=none&security=tls&sni=vpn.ВА
 
 А в Cloudflare вручную: запись `A vpn → IP` (proxied), **Origin Rule** `Hostname = vpn.<домен>` → порт `8443`, SSL-режим `Full`.
 
+### Доступ к панели через Cloudflare
+
+Если прямой IP тоже заблокирован, панель выносится за Cloudflare так же:
+
+1. Cloudflare → DNS: запись `A panel → IP сервера`, проксирование включено.
+2. **Rules → Origin Rules**: `Hostname = panel.<домен>` → destination port `8765`.
+3. SSL/TLS режим `Full`.
+4. Откройте `https://panel.<домен>` (это и есть web-панель).
+
+На сервере порт `8765/tcp` должен быть открыт в ufw:
+
+```bash
+ufw allow 8765/tcp comment 'vless-panel-https'
+```
+
+> Порт `8766` (HTTP fallback без TLS) наружу не открывайте — только по SSH-туннелю при поломке сертификатов.
+
 ### Серверная часть (как это устроено)
 
 - Конфиг `/etc/xray-cf/config.json` — VLESS + WebSocket + TLS, слушает `:8443`.
