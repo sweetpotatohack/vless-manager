@@ -107,12 +107,15 @@ launch_xray_background() {
         systemd-run --scope --unit="$unit" -p Slice=system.slice \
             bash -c "exec xray run -config $(printf '%q' "$config_file") >> $(printf '%q' "$log_file") 2>&1" &
         disown 2>/dev/null || true
-        local i main_pid=""
+        local i main_pid="" cg
         for i in $(seq 1 40); do
-            main_pid=$(systemctl show -p MainPID --value "${unit}.scope" 2>/dev/null || true)
-            if [[ -n "$main_pid" && "$main_pid" != "0" ]] && kill -0 "$main_pid" 2>/dev/null; then
-                echo "$main_pid"
-                return 0
+            cg=$(systemctl show -p ControlGroup --value "${unit}.scope" 2>/dev/null || true)
+            if [[ -n "$cg" && -f "/sys/fs/cgroup$cg/cgroup.procs" ]]; then
+                main_pid=$(awk 'NR==1{print $1}' "/sys/fs/cgroup$cg/cgroup.procs" 2>/dev/null || true)
+                if [[ -n "$main_pid" && "$main_pid" != "0" ]] && kill -0 "$main_pid" 2>/dev/null; then
+                    echo "$main_pid"
+                    return 0
+                fi
             fi
             sleep 0.15
         done
