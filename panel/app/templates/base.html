@@ -21,7 +21,6 @@
       <a href="/dashboard" class="{% if request.url.path == '/dashboard' %}active{% endif %}"><span class="nav-dot"></span>Обзор</a>
       <a href="/proxy" class="{% if request.url.path.startswith('/proxy') %}active{% endif %}"><span class="nav-dot"></span>Proxy</a>
       <a href="/nodes" class="{% if request.url.path == '/nodes' %}active{% endif %}"><span class="nav-dot"></span>Ноды</a>
-      <a href="/cloudflare" class="{% if request.url.path == '/cloudflare' %}active{% endif %}"><span class="nav-dot nav-dot-orange"></span>Cloudflare</a>
       <a href="/certs" class="{% if request.url.path == '/certs' %}active{% endif %}"><span class="nav-dot nav-dot-red"></span>Сертификаты</a>
       <a href="/profile" class="{% if request.url.path == '/profile' %}active{% endif %}"><span class="nav-dot"></span>Кабинет</a>
     </nav>

@@ -436,15 +436,19 @@ setup_networking() {
             ufw allow 80/tcp comment 'letsencrypt-http-01' 2>/dev/null || ufw allow 80/tcp 2>/dev/null || true
             log_info "ufw: открыт 80/tcp для Let's Encrypt (выпуск и продление HTTP-01)"
         fi
-        ufw allow 8443/tcp comment 'cloudflare-ws' 2>/dev/null || true
-        log_info "ufw: TCP ${VLESS_IPT_MIN}-${VLESS_IPT_MAX} (VLESS) — смотрите ufw status numbered"
+        ufw allow 25001/udp comment 'hysteria2' 2>/dev/null || true
+        ufw allow 8765/tcp comment 'vless-panel-https' 2>/dev/null || true
+        ufw allow 8766/tcp comment 'vless-panel-http' 2>/dev/null || true
+        log_info "ufw: TCP ${VLESS_IPT_MIN}-${VLESS_IPT_MAX} (VLESS) + UDP 25001 (Hysteria2)"
     else
         if command -v iptables >/dev/null 2>&1; then
             if ! iptables -C INPUT -p tcp --dport "${VLESS_IPT_MIN}:${VLESS_IPT_MAX}" -j ACCEPT 2>/dev/null; then
                 iptables -I INPUT 1 -p tcp --dport "${VLESS_IPT_MIN}:${VLESS_IPT_MAX}" -j ACCEPT 2>/dev/null || \
                 iptables -I INPUT -p tcp --dport "${VLESS_IPT_MIN}:${VLESS_IPT_MAX}" -j ACCEPT 2>/dev/null || true
             fi
-            log_info "iptables INPUT: TCP ${VLESS_IPT_MIN}-${VLESS_IPT_MAX} (UFW выключен)"
+            iptables -C INPUT -p udp --dport 25001 -j ACCEPT 2>/dev/null || \
+            iptables -I INPUT 1 -p udp --dport 25001 -j ACCEPT 2>/dev/null || true
+            log_info "iptables INPUT: TCP ${VLESS_IPT_MIN}-${VLESS_IPT_MAX} + UDP 25001 (Hysteria2)"
             if [[ -n "${VLESS_INSTALL_LE_DOMAIN:-}" ]]; then
                 iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null || \
                 iptables -I INPUT 1 -p tcp --dport 80 -j ACCEPT 2>/dev/null || true
@@ -498,142 +502,16 @@ create_server_management() {
 }
 
 create_sample_client() {
-    log_info "Creating sample client configuration..."
-    
-    # Generate sample client
-    SAMPLE_UUID=$(xray uuid)
-    # 25000–44999: не 80/443 и не типичные веб-порты (рядом с Gophish/nginx)
-    SAMPLE_PORT=$((RANDOM % 20000 + 25000))
-    local n=0
-    while netstat -tuln 2>/dev/null | grep -q ":$SAMPLE_PORT " && [[ $n -lt 150 ]]; do
-        SAMPLE_PORT=$((RANDOM % 20000 + 25000))
-        n=$((n + 1))
-    done
-    SERVER_IP=$(curl -4 -fsS --max-time 7 "https://api.ipify.org" 2>/dev/null || curl -4 -fsS --max-time 7 "https://ifconfig.me/ip" 2>/dev/null || echo "127.0.0.1")
-    
-    mkdir -p "$CONFIG_DIR/certs"
-    SAMPLE_HOST_LINK="$SERVER_IP"
-    TLS_MODE_LOCAL="selfsigned"
-    # shellcheck source=/dev/null
-    [[ -f "$CONFIG_DIR/tls.env" ]] && source "$CONFIG_DIR/tls.env"
-    TLS_MODE_LOCAL="${TLS_MODE:-selfsigned}"
-    if [[ "$TLS_MODE_LOCAL" == "letsencrypt" && -n "${LE_FULLCHAIN:-}" && -f "$LE_FULLCHAIN" && -n "${LE_PRIVKEY:-}" && -f "$LE_PRIVKEY" ]]; then
-        SAMPLE_CRT="$LE_FULLCHAIN"
-        SAMPLE_KEY="$LE_PRIVKEY"
-        SAMPLE_HOST_LINK="${PUBLIC_HOST:-$SERVER_IP}"
-        log_info "sample_client: TLS Let's Encrypt ($SAMPLE_HOST_LINK)"
+    log_info "Creating sample Hysteria2 + PC VLESS clients..."
+    if [[ -f "$INSTALL_DIR/vless_manager.sh" ]]; then
+        bash "$INSTALL_DIR/vless_manager.sh" cli create-hy2 sample_client 2>&1 | tee /dev/null
+        bash "$INSTALL_DIR/vless_manager.sh" cli create-pc sample_client 2>&1 | tee /dev/null || \
+            log_warn "PC VLESS sample client не создан"
+        log_info "Sample Hysteria2: $CONFIG_DIR/urls/sample_client.txt"
+        log_info "Sample PC VLESS: $CONFIG_DIR/urls/sample_client-pc.txt"
     else
-        SAMPLE_KEY="$CONFIG_DIR/certs/sample_client.key"
-        SAMPLE_CRT="$CONFIG_DIR/certs/sample_client.crt"
-        openssl req -x509 -nodes -newkey rsa:4096 -keyout "$SAMPLE_KEY" -out "$SAMPLE_CRT" -days 8250 \
-            -subj "/CN=${SERVER_IP}" \
-            -addext "subjectAltName=IP:${SERVER_IP}" 2>/dev/null || \
-        openssl req -x509 -nodes -newkey rsa:4096 -keyout "$SAMPLE_KEY" -out "$SAMPLE_CRT" -days 8250 \
-            -subj "/CN=${SERVER_IP}"
-        chmod 600 "$SAMPLE_KEY" 2>/dev/null || true
-        chmod 644 "$SAMPLE_CRT" 2>/dev/null || true
-        log_info "sample_client: самоподписанный TLS (Allow Insecure)"
+        log_warn "vless_manager.sh не найден — sample client пропущен"
     fi
-    
-    # VLESS+TCP+TLS+XUDP, TLS 1.2–1.3, шифрование транспорта
-    cat > "$CONFIG_DIR/clients/sample_client.json" << SAMPLE_CONFIG_EOF
-{
-    "log": {
-        "loglevel": "info"
-    },
-    "dns": {
-        "servers": [
-            "8.8.8.8",
-            "1.1.1.1"
-        ],
-        "queryStrategy": "UseIPv4"
-    },
-    "inbounds": [
-        {
-            "listen": "0.0.0.0",
-            "port": $SAMPLE_PORT,
-            "protocol": "vless",
-            "settings": {
-                "clients": [
-                    {
-                        "id": "$SAMPLE_UUID"
-                    }
-                ],
-                "decryption": "none",
-                "packetEncoding": "xudp"
-            },
-            "streamSettings": {
-                "network": "tcp",
-                "security": "tls",
-                "tlsSettings": {
-                    "certificates": [
-                        {
-                            "certificateFile": "$SAMPLE_CRT",
-                            "keyFile": "$SAMPLE_KEY"
-                        }
-                    ],
-                    "minVersion": "1.2",
-                    "maxVersion": "1.3",
-                    "alpn": ["http/1.1"]
-                }
-            },
-            "sniffing": {
-                "enabled": true,
-                "destOverride": ["http", "tls", "quic"],
-                "metadataOnly": false
-            }
-        }
-    ],
-    "outbounds": [
-        {
-            "tag": "direct",
-            "protocol": "freedom",
-            "settings": {
-                "domainStrategy": "UseIPv4"
-            }
-        }
-    ],
-    "routing": {
-        "domainStrategy": "IPIfNonMatch",
-        "rules": [
-            {
-                "type": "field",
-                "network": "tcp,udp",
-                "outboundTag": "direct"
-            }
-        ]
-    }
-}
-SAMPLE_CONFIG_EOF
-
-    if [[ "$TLS_MODE_LOCAL" == "letsencrypt" ]]; then
-        VLESS_URL="vless://$SAMPLE_UUID@${SAMPLE_HOST_LINK}:$SAMPLE_PORT?encryption=none&security=tls&sni=${SAMPLE_HOST_LINK}&fp=chrome&type=tcp&allowInsecure=0#sample_client"
-    else
-        VLESS_URL="vless://$SAMPLE_UUID@${SAMPLE_HOST_LINK}:$SAMPLE_PORT?encryption=none&security=tls&sni=${SAMPLE_HOST_LINK}&fp=chrome&type=tcp&allowInsecure=1#sample_client"
-    fi
-    echo "$VLESS_URL" > "$CONFIG_DIR/urls/sample_client.txt"
-
-    local SAMPLE_QR=""
-    mkdir -p "$CONFIG_DIR/qr-codes"
-    if command -v qrencode >/dev/null 2>&1; then
-        qrencode -s 8 -o "$CONFIG_DIR/qr-codes/sample_client.png" "$VLESS_URL" 2>/dev/null && SAMPLE_QR="$CONFIG_DIR/qr-codes/sample_client.png"
-    fi
-    local VURL_ESC
-    VURL_ESC=$(printf '%s' "$VLESS_URL" | sed "s/'/''/g")
-    sqlite3 "$CONFIG_DIR/clients.db" "INSERT INTO clients (name, uuid, port, config_path, url, qr_path) VALUES ('sample_client', '$SAMPLE_UUID', $SAMPLE_PORT, '$CONFIG_DIR/clients/sample_client.json', '$VURL_ESC', '$SAMPLE_QR');"
-    
-    if [[ -f "$INSTALL_DIR/vless_manager.sh" ]] && command -v python3 >/dev/null 2>&1; then
-        bash << EOS
-source "$INSTALL_DIR/vless_manager.sh"
-write_singbox_client_bundle "sample_client" "$SAMPLE_UUID" "$SAMPLE_PORT" "$SAMPLE_HOST_LINK"
-EOS
-        log_info "NekoBox/sing-box: $CONFIG_DIR/bundles/sample_client.sing-box.json"
-    fi
-    
-    log_info "Sample client created: sample_client"
-    log_info "UUID: $SAMPLE_UUID"
-    log_info "Port: $SAMPLE_PORT"
-    log_info "URL: $VLESS_URL"
 }
 
 install_web_panel() {
@@ -668,6 +546,10 @@ remote_agent_install() {
     cp -f "$REPO_ROOT/install_vless_manager.sh" "$INSTALL_DIR/" 2>/dev/null || true
     install_systemd_vless_service
     systemctl start vless-xray.service 2>/dev/null || /usr/local/bin/vless-servers start 2>/dev/null || true
+    if [[ -f "$INSTALL_DIR/vless_manager.sh" ]]; then
+        bash "$INSTALL_DIR/vless_manager.sh" cli ensure-hy2 >/dev/null 2>&1 || true
+        log_info "Hysteria2 (UDP :25001) настроена на agent"
+    fi
     if command -v ufw >/dev/null 2>&1; then
         ufw allow 8765/tcp comment 'vless-panel-https' 2>/dev/null || true
         ufw allow 8766/tcp comment 'vless-panel-http' 2>/dev/null || true
@@ -729,24 +611,13 @@ main() {
     echo -e "${GREEN}╚════════════════════════════════════════════════════════════════╝${NC}"
     echo
     echo -e "${WHITE}📋 Команды:${NC}"
-    echo -e "   ${YELLOW}systemctl status vless-xray${NC}   # Статус Xray (автозапуск)"
-    echo -e "   ${YELLOW}systemctl status vless-panel${NC}  # Web Control Panel :8765"
-    echo -e "   ${YELLOW}vless-manager${NC}                 # Меню управления клиентами"
-    echo -e "   ${YELLOW}vless-servers status${NC}          # Статус процессов"
-    echo -e "   ${YELLOW}cat ${CONFIG_DIR}/urls/sample_client.txt${NC}  # Пример VLESS URL"
+    echo -e "   ${YELLOW}systemctl status hysteria-server${NC}   # Hysteria2 (UDP :25001, автозапуск)"
+    echo -e "   ${YELLOW}systemctl status vless-panel${NC}      # Web Control Panel :8765"
+    echo -e "   ${YELLOW}vless-manager${NC}                     # Меню управления клиентами"
+    echo -e "   ${YELLOW}cat ${CONFIG_DIR}/urls/sample_client.txt${NC}  # Пример Hysteria2 URL"
     echo
-    echo -e "${GREEN}✅ Транспорт: VLESS + TCP + TLS (1.2–1.3) + XUDP${NC}"
-    if [[ -f "$CONFIG_DIR/tls.env" ]]; then
-        # shellcheck source=/dev/null
-        source "$CONFIG_DIR/tls.env"
-        if [[ "${TLS_MODE:-}" == "letsencrypt" && -n "${PUBLIC_HOST:-}" ]]; then
-            echo -e "${GREEN}✅ TLS: Let's Encrypt, домен в ссылке: ${PUBLIC_HOST} (Allow Insecure в клиенте не нужен)${NC}"
-        else
-            echo -e "${YELLOW}✅ TLS: самоподпись на IP — в клиенте включите «Allow Insecure»${NC}"
-        fi
-    fi
-    echo -e "${GREEN}✅ Готовый профиль NekoBox/sing-box: ${CONFIG_DIR}/bundles/*.sing-box.json${NC}"
-    echo -e "${GREEN}✅ Шаблоны и пояснения: ${CONFIG_DIR}/templates/${NC}"
+    echo -e "${GREEN}✅ Профиль клиента: Hysteria2 (UDP :25001) + обфускация Salamander${NC}"
+    echo -e "${GREEN}✅ Один конфиг + QR для Wi‑Fi и мобильного интернета${NC}"
 }
 
 main "$@"

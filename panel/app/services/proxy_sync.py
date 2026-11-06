@@ -4,11 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Node, ProxyUser
 from app.services.nodes_helpers import node_vpn_host
-from app.services.provision import (
-    _extract_port_from_vless,
-    _extract_uuid_from_vless,
-    ensure_qr_codes_for_user,
-)
+from app.services.provision import ensure_qr_codes_for_user
 
 
 def upsert_proxy_user_from_agent(
@@ -19,16 +15,15 @@ def upsert_proxy_user_from_agent(
     username = (entry.get("username") or "").strip()
     if not username:
         raise ValueError("empty username")
-    has_wifi = bool(entry.get("has_wifi"))
-    has_mobile = bool(entry.get("has_mobile"))
-    wifi_url = entry.get("wifi_vless_url")
-    mobile_url = entry.get("mobile_vless_url")
     hy2 = entry.get("hysteria_url")
-    cf_url = entry.get("cf_vless_url")
+    pc_url = entry.get("wifi_vless_url")
+    has_wifi = bool(entry.get("has_wifi") or pc_url)
     wifi_port = entry.get("wifi_port")
-    if wifi_port is None:
-        wifi_port = _extract_port_from_vless(wifi_url)
-    uuid = entry.get("uuid") or _extract_uuid_from_vless(mobile_url or wifi_url)
+    if wifi_port is None and pc_url:
+        from app.services.provision import _extract_port_from_vless
+
+        wifi_port = _extract_port_from_vless(pc_url)
+    uuid = entry.get("uuid") or username
 
     pu = (
         db.query(ProxyUser)
@@ -36,33 +31,21 @@ def upsert_proxy_user_from_agent(
         .first()
     )
     if not pu:
-        pu = ProxyUser(
-            node_id=node.id,
-            username=username,
-            has_wifi=has_wifi,
-            has_mobile=has_mobile,
-        )
+        pu = ProxyUser(node_id=node.id, username=username)
         db.add(pu)
     pu.has_wifi = has_wifi
-    pu.has_mobile = has_mobile
-    pu.wifi_vless_url = wifi_url
-    pu.mobile_vless_url = mobile_url
+    pu.has_mobile = False
+    pu.has_hy2 = bool(hy2)
+    pu.wifi_vless_url = pc_url
+    pu.mobile_vless_url = None
     pu.hysteria_url = hy2
-    pu.cf_vless_url = cf_url
+    pu.cf_vless_url = None
     pu.wifi_port = wifi_port
     pu.uuid = uuid
     pu.exit_country = node.country or node.region or ""
     pu.exit_ip = node_vpn_host(node) or node.public_ip or ""
     db.flush()
-    ensure_qr_codes_for_user(
-        username,
-        wifi_vless_url=wifi_url,
-        mobile_vless_url=mobile_url,
-        hysteria_url=hy2,
-        cf_vless_url=cf_url,
-        has_wifi=has_wifi,
-        has_mobile=has_mobile,
-    )
+    ensure_qr_codes_for_user(username, hysteria_url=hy2, wifi_vless_url=pc_url)
     return pu
 
 

@@ -90,7 +90,6 @@ def port_status() -> dict:
     free = find_free_wifi_port()
     hy = 25001
     hy_busy = hy in _listening_udp_ports()
-    reality_busy = 443 in listening
     return {
         "listening": listening,
         "assigned_vless": assigned,
@@ -98,8 +97,6 @@ def port_status() -> dict:
         "wifi_port_available": free is not None,
         "hysteria_udp_port": hy,
         "hysteria_port_listening": hy_busy,
-        "reality_tcp_port": 443,
-        "reality_port_listening": reality_busy,
     }
 
 

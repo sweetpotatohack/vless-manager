@@ -1,20 +1,60 @@
 # VLESS Manager Pro
 
-Платформа для развёртывания VPN на **Xray-core**: один универсальный профиль **VLESS + WebSocket через Cloudflare** (работает и на Wi‑Fi, и на мобильном интернете, обходит блокировки по IP), QR-коды, **web-панель**, **multi-node** через агентов, **systemd**, Let's Encrypt.
+Платформа для развёртывания VPN на **Hysteria2** + **VLESS**: телефонный Hysteria2-профиль (Wi‑Fi и мобильный интернет) и отдельный PC VLESS для NekoRay, QR-коды, **web-панель**, **multi-node** через агентов, **systemd**, Let's Encrypt.
 
 Репозиторий: [github.com/sweetpotatohack/vless-manager](https://github.com/sweetpotatohack/vless-manager)
 
 ---
 
-## Web-панель (скриншоты)
+## Что это
 
-Обезличенные кадры интерфейса **VLESSPRO** на master: HTTPS `:8765`, тёмная тема, единый вход для всех нод.
+| Компонент | Назначение |
+|-----------|------------|
+| **`install_vless_manager.sh`** | Единая установка: Hysteria2, TLS, firewall, sample-клиент, web-панель, systemd |
+| **`vless_manager.sh`** | CLI/меню: создание/удаление Hysteria2-клиентов, QR |
+| **`panel/`** | Web **Control Panel** (FastAPI): Proxy, ноды, сертификаты, кабинет админа |
+| **Агент на VPS** | Удалённая нода: тот же стек + API для master |
+
+### Профили клиента
+
+Для каждого пользователя выдаётся **два независимых профиля**: телефонный Hysteria2 и PC VLESS. Hysteria2 не трогается, когда добавляется VLESS.
+
+| Профиль | Протокол | Порт клиента | Для кого |
+|---------|----------|--------------|----------|
+| **Hysteria2** | Hysteria2 (UDP/QUIC) | 25001/udp | Телефон: Wi‑Fi и мобильный интернет |
+| **PC VLESS** | VLESS + TCP + TLS (Xray) | 25000–45000/tcp | ПК: NekoRay / v2rayN |
+
+```text
+# Телефон (Hysteria2):
+hysteria2://user:password@IP:25001/?sni=your.domain&obfs=salamander&obfs-password=OBFS#user
+
+# ПК (VLESS TCP+TLS):
+vless://UUID@IP:PORT?encryption=none&security=tls&sni=your.domain&fp=chrome&type=tcp#user-pc
+```
+
+Плюс два QR-кода: Hysteria2 (`<user>.png`) и PC VLESS (`<user>-pc.png`).
+
+**Почему Hysteria2 для телефона:**
+- **UDP/QUIC** — мобильные операторы режут TCP/443 агрессивнее, чем UDP;
+- **обфускация Salamander** — прячет QUIC-рукопожатие от DPI;
+- один конфиг для всех сетей, у каждого клиента свой логин/пароль.
+
+**Почему отдельный VLESS для ПК:**
+- NekoRay/sing-box на Windows при Hysteria2 с TUN может сыпать `inbound/tun: authentication failed, status code: 404` и не давать интернет;
+- VLESS + TCP + TLS работает в NekoRay/v2rayN штатно, без TUN-тюнинга;
+- живёт на отдельном TCP-порту и не ломает рабочий Hysteria2.
+
+---
+
+## Web-панель
+
+Кадры интерфейса **VLESSPRO** на master: HTTPS `:8765`, тёмная тема, единый вход для всех нод.
 
 | Раздел | Описание |
 |--------|----------|
-| **Обзор** | Сводка, **мониторинг CPU/RAM/диск** по каждой ноде, выдача конфигов |
-| **Proxy** | Создание пользователя, универсальный профиль + QR, список клиентов |
-| **Ноды** | Master + remote agent, DNS VPN, порты firewall, install.sh |
+| **Обзор** | Сводка, мониторинг CPU/RAM/диск по каждой ноде |
+| **Proxy** | Создание пользователя → Hysteria2 (телефон) + PC VLESS + QR, список клиентов |
+| **Ноды** | Master + remote agent, порты firewall, install.sh |
 | **Сертификаты** | Let's Encrypt, autoprenew, Hysteria2, certbot timer |
 | **Кабинет** | Пароль admin, Telegram / SMTP оповещения |
 
@@ -52,116 +92,56 @@
 
 | Требование | Зачем |
 |------------|--------|
-| VPS с **root** (Debian / Ubuntu) | Установка Xray, certbot, панели |
-| Домен с **A-записью** на IP VPS | Let's Encrypt для VLESS и панели |
+| VPS с **root** (Debian / Ubuntu) | Установка Hysteria2, certbot, панели |
+| Домен с **A-записью** на IP VPS | Let's Encrypt для SNI Hysteria2 (необязательно, но желательно) |
 | Email для Let's Encrypt | Выпуск/продление сертификата |
-| Открытые порты (см. ниже) | VPN + панель + certbot |
+| Открытый порт **25001/udp** | Hysteria2 (телефон) |
+| Открытый диапазон **25000–45000/tcp** | PC VLESS TCP+TLS (NekoRay/v2rayN) |
+| Открытый порт **8765/tcp** | Web-панель (HTTPS) |
+| Открытый порт **80/tcp** | Let's Encrypt HTTP-01 (только на время выпуска) |
 | **Git** на сервере | `git clone` репозитория |
 
-**Порты на master (минимум):**
+> Без домена установка тоже работает — тогда SNI = IP, сертификат самоподписанный, в клиенте `insecure=1`.
 
-| Порт | Протокол | Назначение |
-|------|----------|------------|
-| **80/tcp** | HTTP | Выпуск/renew LE (standalone) |
-| **8443/tcp** | TCP | origin для Cloudflare (xray-cf, универсальный профиль) |
-| **8765/tcp** | HTTPS | Web-панель (основной вход) |
-| **8766/tcp** | HTTP | Панель без TLS (если LE сломался) |
-| 443/tcp · 25001/udp · 25000–45000/tcp | TCP/UDP | устаревшие прямые профили (REALITY / Hy2 / Wi‑Fi), для совместимости |
-
-> Клиенту наружу открывается только стандартный **443/tcp** (Cloudflare edge). Порт `8443` — только для Cloudflare → origin, в клиентских ссылках не используется.
-
-### Установка за 3 шага
+### 1. Клонировать и установить
 
 ```bash
-git clone --depth 1 https://github.com/sweetpotatohack/vless-manager.git
+apt-get update -y && apt-get install -y git curl
+git clone https://github.com/sweetpotatohack/vless-manager.git
 cd vless-manager
 chmod +x install_vless_manager.sh
 sudo ./install_vless_manager.sh
 ```
 
-При установке:
+Установщик спросит:
+- **домен для TLS** (например `vpn.example.com`) и **email** — или Enter для самоподписи;
+- остальное сделает сам: Hysteria2, firewall, LE, панель, sample-клиент.
 
-1. Укажите **домен** (например `vpn.example.com`) и **email** → certbot создаст LE → `/etc/vless-manager/tls.env`.
-2. **Enter** без домена → самоподписанный TLS (в клиентах включите Allow Insecure).
-3. Установщик поднимет **Xray**, **vless-xray.service**, **web-панель** (`vless-panel.service`).
-
-Одной строкой:
+После установки:
 
 ```bash
-git clone --depth 1 https://github.com/sweetpotatohack/vless-manager.git /tmp/vless-manager \
-  && cd /tmp/vless-manager && chmod +x install_vless_manager.sh && sudo ./install_vless_manager.sh
+systemctl status hysteria-server   # Hysteria2 (UDP :25001)
+systemctl status vless-panel       # Web-панель :8765
+cat /etc/vless-manager/urls/sample_client.txt   # пример профиля
 ```
 
-### Первый вход и настройка
+### 2. Войти в панель
 
-| Шаг | Действие |
-|-----|----------|
-| 1 | Откройте **`https://ВАШ_ДОМЕН:8765/login`** (или `http://IP:8766/login` — аварийный HTTP) |
-| 2 | Логин **`admin`** / **`admin`** → сразу смените пароль в **Кабинет** |
-| 3 | **Ноды** → укажите **страну** для локальной (master) ноды |
-| 4 | **Сертификаты** → проверьте срок LE, при необходимости **Синхронизировать Hysteria** |
-| 5 | **Cloudflare** → вставьте API-токен, сохраните, нажмите **«Подготовить домен»** |
-| 6 | **Proxy** → создайте пользователя — один универсальный профиль + QR |
-
-Полезные команды:
-
-```bash
-sudo systemctl enable --now vless-xray vless-panel
-sudo systemctl status vless-panel vless-xray
-/opt/vless-manager/vless_manager.sh cli create-wifi testuser
-/usr/local/bin/vless-servers status
-journalctl -u vless-panel -u vless-xray -f
+```
+https://IP_или_домен:8765/login
 ```
 
----
+Логин/пароль по умолчанию: **admin / admin** — смените сразу в **Кабинет**.
 
-## Что входит в проект
+### 3. Создать первого клиента
 
-| Компонент | Назначение |
-|-----------|------------|
-| **`install_vless_manager.sh`** | Единая установка: Xray, TLS, firewall, sample-клиент, **web-панель**, systemd |
-| **`vless_manager.sh`** | CLI/меню: универсальный Cloudflare профиль, QR, устаревшие Wi‑Fi/REALITY/Hy2 |
-| **`vless-servers`** | Запуск/остановка inbound Xray по конфигам клиентов |
-| **`panel/`** | Web **Control Panel** (FastAPI): Proxy, ноды, сертификаты, кабинет админа |
-| **Агент на VPS** | Удалённая нода: тот же стек + API для master |
+1. **Proxy** → вкладка.
+2. Имя (латиница, без пробелов) → выберите ноду → **«Создать Hysteria2 + PC VLESS»**.
+3. Откройте карточку клиента — там две ссылки и два QR:
+   - `hysteria2://` — для телефона (v2rayTun / NekoBox / v2rayN с hysteria2);
+   - `vless://` — для ПК (NekoRay / v2rayN), отдельный TCP-порт.
 
-### Профиль клиента (универсальный)
-
-Для каждого пользователя выдаётся **один универсальный профиль** — он работает и на Wi‑Fi, и на мобильном интернете:
-
-| Профиль | Протокол | Порт клиента | Как работает |
-|---------|----------|--------------|--------------|
-| **Universal** | VLESS + WebSocket + TLS | 443/tcp | Клиент → Cloudflare:443 → сервер:8443 (xray-cf) |
-
-```text
-vless://UUID@vpn.ВАШ_ДОМЕН:443?encryption=none&security=tls&sni=vpn.ВАШ_ДОМЕН&fp=chrome&type=ws&path=%2Fws-akuma67&host=vpn.ВАШ_ДОМЕН#USER-cf
-```
-
-Плюс QR-код для импорта в v2rayN / v2rayTun. В клиенте: **MUX выключить**.
-
----
-
-## Web Control Panel
-
-### Разделы
-
-| Вкладка | Функции |
-|---------|---------|
-| **Обзор** | Ноды, число клиентов, срок сертификатов |
-| **Proxy** | Имя пользователя → **master-нода** → универсальный профиль + QR |
-| **Cloudflare** | API-токен, зона, hostname, **«Подготовить домен»**, проверка origin |
-| **Ноды** | Страна master, **генерация агента**, install-команда, статус online |
-| **Сертификаты** | LE, renew, новый DNS, sync Hy2, автопродление |
-| **Кабинет** | Пароль, Telegram / SMTP оповещения |
-
-### Выдача конфига на master (локальная нода)
-
-1. **Cloudflare** → API-токен + зона → **Сохранить** → **«Подготовить домен»**.
-2. **Proxy** → имя (латиница, без пробелов) → нода **master**.
-3. Нажмите **«Создать универсальный профиль + QR»** (~10–30 с).
-4. Откройте карточку клиента — там `vless://` ссылка и QR.
-
-Универсальный профиль выдаётся только на **master** (Cloudflare проксирует на origin master). Дубликаты имён на одной ноде запрещены.
+Телефонный Hysteria2 работает и на Wi‑Fi, и на мобильном интернете. PC VLESS — для случаев, когда Hysteria2 в NekoRay на Windows не поднимается.
 
 ---
 
@@ -171,20 +151,20 @@ vless://UUID@vpn.ВАШ_ДОМЕН:443?encryption=none&security=tls&sni=vpn.ВА
 
 ```
 [Браузер] → https://master:8765 (Proxy)
-                ↓ Bearer token
-         [Agent VPS :8765] → vless_manager.sh cli → Xray inbound на agent
+                ↓ job queue
+         [Agent VPS] → Hysteria2 :25001/udp на agent
 ```
 
 ### Что нужно для agent-ноды
 
 | Требование | Зачем |
 |------------|--------|
-| Отдельный VPS (root) | Xray + agent API |
-| Свой домен / LE **или** общий стек TLS | Wi‑Fi VLESS на agent (при установке agent задаётся certbot как на master) |
-| **Master должен достучаться до agent по TCP 8765** | `POST /api/v1/provision` с master на `api_base` ноды |
-| Порты VPN на agent | 25000–45000/tcp, 443/tcp, 25001/udp (как на master) |
+| Отдельный VPS (root) | Hysteria2 + agent API |
+| Домен / LE **или** самоподпись | SNI в Hysteria2-ссылке |
+| **Master должен достучаться до agent по TCP 8765** | `POST /api/v1/provision` с master на `api_base` ноды (или agent сам опрашивает master через job queue) |
+| Порт **25001/udp** на agent | Hysteria2 |
 
-**На firewall agent:** разрешите **8765/tcp** с **IP master** (не обязательно открывать панель agent всему интернету).
+**На firewall agent:** разрешите **8765/tcp** (для прямых API-вызовов master) и **25001/udp** (VPN).
 
 **На master:** исходящие подключения к `IP_агента:8765` не блокировать.
 
@@ -192,319 +172,181 @@ vless://UUID@vpn.ВАШ_ДОМЕН:443?encryption=none&security=tls&sni=vpn.ВА
 
 #### 1. На master: вкладка **Ноды**
 
-1. Укажите **страну** для локальной ноды (если ещё не задана).
-2. Блок **«Новый agent»**:
-   - **Имя** — например `de-frankfurt`
+1. Блок **«Сгенерировать агент»**:
+   - **Название** — например `frankfurt-1`
    - **Страна** — отображается в Proxy (DE, NL, …)
-   - **Домен** — опционально (для LE на agent; можно оставить пустым и указать при установке)
-3. Нажмите **сгенерировать** — появится нода со статусом **pending** и команда установки.
+   - **Домен** — DNS A/AAAA на IP agent (для SNI Hysteria2; можно пусто → SNI = IP)
+2. Нажмите **«Сгенерировать агент»** — появится нода со статусом **pending** и кнопкой **install.sh**.
 
-#### 2. Скопируйте install-команду
+#### 2. Скопируйте install-скрипт
 
-Пример (URL master из панели **Ноды** → install-команда; подставьте свой домен и token):
+В строке ноды нажмите **install.sh** — скачается скрипт. Или скачайте напрямую:
 
 ```bash
-curl -fsSL 'https://vpn.example.com:8765/api/v1/agent/install.sh?token=ВАШ_TOKEN' | bash
+curl -fsSL 'https://MASTER:8765/api/v1/agent/install.sh?token=TOKEN' -o agent.sh
 ```
 
-Используйте **HTTPS** URL master (домен из Let's Encrypt на master), не чужой хост из документации. Token одноразово привязан к записи ноды в БД.
-
-Альтернатива: **Ноды** → скачать `install.sh` для конкретной ноды (если доступна кнопка/ссылка).
+Token берётся из install.sh ноды (генерируется на master).
 
 #### 3. На новом VPS (agent)
 
 ```bash
-# от root — MASTER = ваш домен панели (как в tls.env), TOKEN из блока «Ноды»
-curl -fsSL 'https://vpn.example.com:8765/api/v1/agent/install.sh?token=TOKEN' | bash
+# от root
+bash agent.sh
+# или вручную:
+curl -fsSL 'https://MASTER:8765/api/v1/agent/install.sh?token=TOKEN' | bash
 ```
 
 Скрипт:
-
-- Скачивает **bundle** с master (`/api/v1/agent/bundle.tar.gz`)
-- Запускает **`install_vless_manager.sh --remote-agent`**
-- Поднимает **vless-xray**, **vless-panel** (API на :8765)
-- Вызывает **`POST /api/v1/nodes/register`** на master (IP, domain, `api_base`)
+- скачивает **bundle** с master (`/api/v1/agent/bundle.tar.gz`);
+- запускает `install_vless_manager.sh --remote-agent` (ставит Hysteria2 + панель-agent);
+- поднимает **vless-panel** (API :8765);
+- регистрируется на master (`POST /api/v1/nodes/register`).
 
 #### 4. Проверка в панели
 
-- **Ноды** → статус **online**, виден **public IP**
-- С master: `curl -k https://IP_АГЕНТА:8765/api/v1/health` (или HTTP :8766)
-- **Proxy** → в списке нод появится agent с нужной страной/IP
+- **Ноды** → статус **online**, виден **public IP**;
+- с master: `curl -k https://IP_АГЕНТА:8765/api/v1/health`;
+- **Proxy** → в списке нод появится agent с нужной страной/IP.
 
 #### 5. Выдача VPN на удалённой ноде
 
-Универсальный (Cloudflare) профиль выдаётся только на **master**. На remote-agent остаются прямые профили Wi‑Fi/LTE — их создают через API/CLI на самой ноде:
+В **Proxy** создайте пользователя и выберите **remote-ноду**. Если нода online:
+- master ставит задачу в очередь (agent сам забирает через `/api/v1/agent/next-job`), либо
+- master дёргает `POST /api/v1/provision` на `api_base` агента.
+
+Ссылка `hysteria2://` и QR появятся в карточке клиента — как для master.
+
+### Проверка agent
 
 ```bash
 # на agent-ноде
-/opt/vless-manager/vless_manager.sh cli create-wifi USER
-/opt/vless-manager/vless_manager.sh cli create-mobile USER
+systemctl status vless-panel hysteria-server
+/opt/vless-manager/vless_manager.sh cli list-hy2
+cat /etc/vless-manager/urls/<имя>.txt
 ```
 
-Master синхронизирует их в каталог (**Proxy → Синхронизировать с нод**). VLESS-ссылки будут с **доменом/IP agent** и портом inbound на agent.
+### Удаление ноды
 
-### Если нода не становится online
+**Ноды** → «Удалить» у нужной ноды — master удалит её клиентов и отправит agent команду `node_uninstall`.
 
-| Проблема | Решение |
-|----------|---------|
-| pending / offline | На agent: `systemctl status vless-panel`, `journalctl -u vless-panel -n 50` |
-| `TypeError: Union ... received a 'tuple'` при install | На agent стоит **Python 3.14** — обновите **master** (SQLAlchemy ≥ 2.0.41 в bundle) и повторите `curl … install.sh`; либо на agent: `/opt/vless-manager/panel/venv/bin/pip install -U 'sqlalchemy>=2.0.41'` и `bash panel/install_panel.sh` из bundle |
-| Master не создаёт конфиг | С master: `curl -H "Authorization: Bearer TOKEN" https://AGENT_IP:8765/api/v1/ports` |
-| Firewall | Открыть 8765 с master → agent; VPN-порты для клиентов |
-| Неверный `api_base` | В БД ноды должен быть URL agent API; перерегистрация через reinstall или правка в **Ноды** (если добавлено) / повтор install |
-| Старый master URL | На agent: `/etc/vless-manager/panel/agent.env`, `master.url` — должен быть `https://master:8765` |
+---
 
-### Agent token
+## CLI (vless-manager)
 
-- На agent: `/etc/vless-manager/panel/agent.env` → `VLESS_PANEL_AGENT_TOKEN=...`
-- Master хранит token в записи **Node** и шлёт `Authorization: Bearer ...` при provision/delete.
-- Не публикуйте token; при утечке — сгенерируйте новую ноду в панели.
-
-### Ручная установка agent (без curl install.sh)
+Основные команды:
 
 ```bash
-export VLESS_PANEL_AGENT_TOKEN='token_с_master'
-export VLESS_PANEL_MASTER_URL='https://master.example.com:8765'
-sudo ./install_vless_manager.sh --remote-agent
-# затем register вручную — см. API ниже
+# Создать клиента Hysteria2 + QR
+/opt/vless-manager/vless_manager.sh cli create-hy2 NAME
+
+# Создать отдельный PC VLESS (TCP+TLS) для NekoRay — не трогает Hysteria2
+/opt/vless-manager/vless_manager.sh cli create-pc NAME
+
+# Удалить клиента Hysteria2
+/opt/vless-manager/vless_manager.sh cli delete-hy2 NAME
+
+# Удалить отдельный PC VLESS
+/opt/vless-manager/vless_manager.sh cli delete-pc NAME
+
+# Список клиентов
+/opt/vless-manager/vless_manager.sh cli list-hy2
+
+# Пересобрать конфиг/сервис Hysteria2 (после ручных правок)
+/opt/vless-manager/vless_manager.sh cli ensure-hy2
+
+# Интерактивное меню
+vless-manager
 ```
+
+Ссылка клиента: `/etc/vless-manager/urls/<имя>.txt`, QR: `/etc/vless-manager/qr-codes/<имя>.png`.
 
 ---
 
-## Systemd (автозапуск)
-
-| Служба | Описание |
-|--------|----------|
-| `vless-xray.service` | Все VLESS inbound из `/etc/vless-manager/clients/` |
-| `xray-cf.service` | Универсальный профиль: VLESS + WS на `:8443` (за Cloudflare) |
-| `vless-panel.service` | HTTPS :8765 + HTTP fallback :8766, API агента |
-| `vless-agent.service` | Alias той же unit (только на remote-нодах) |
-| `xray-reality.service` | REALITY :443 (устаревший mobile) |
-| `hysteria-server.service` | Hysteria2 :25001 (устаревший запасной) |
+## Полезные команды
 
 ```bash
-sudo systemctl enable --now vless-xray vless-panel
-sudo systemctl restart vless-panel
-/usr/local/bin/vless-servers reconcile   # поднять упавшие Wi‑Fi inbound
+# Статусы
+systemctl status hysteria-server vless-panel
+journalctl -u hysteria-server -f
+journalctl -u vless-panel -f
+
+# Логи
+tail -f /var/log/vless-manager.log
+
+# Перезапуск панели
+systemctl restart vless-panel
+
+# Обновление сертификата Hysteria2 из LE
+# (панель → Сертификаты → «Синхронизировать Hysteria2»)
 ```
 
 ---
 
-## CLI (`vless_manager.sh`)
+## Порты и firewall
+
+| Служба | Порт | Протокол | Назначение |
+|--------|------|----------|------------|
+| `hysteria-server.service` | 25001 | udp | Hysteria2 — телефон (Wi‑Fi + LTE) |
+| `vless-xray.service` / per-client xray | 25000–45000 | tcp | PC VLESS TCP+TLS (NekoRay/v2rayN) |
+| `vless-panel.service` | 8765 | tcp | Web-панель HTTPS |
+| `vless-panel.service` | 8766 | tcp | HTTP fallback панели |
+| certbot | 80 | tcp | Let's Encrypt HTTP-01 (выпуск/продление) |
+
+UFW настраивается установщиком автоматически. Проверить:
 
 ```bash
-vless-manager                    # интерактивное меню
-/opt/vless-manager/vless_manager.sh cli create-cf USERNAME     # универсальный Cloudflare профиль
-/opt/vless-manager/vless_manager.sh cli delete-cf USERNAME
-/opt/vless-manager/vless_manager.sh cli ensure-cf              # поднять xray-cf
-/opt/vless-manager/vless_manager.sh cli cf-status              # статус CF-обхода
-# устаревшие прямые профили (для совместимости):
-/opt/vless-manager/vless_manager.sh cli create-wifi USERNAME
-/opt/vless-manager/vless_manager.sh cli create-mobile USERNAME
-/opt/vless-manager/vless_manager.sh repair-ports
+ufw status numbered
 ```
 
 ---
 
-## Сертификаты
-
-| Где | Путь / действие |
-|-----|-----------------|
-| LE live | `/etc/letsencrypt/live/DOMAIN/` |
-| Активный VPN TLS | `/etc/vless-manager/tls.env` |
-| Hysteria | `/etc/hysteria/certs/` (кнопка sync в панели) |
-| Панель HTTPS | те же LE файлы из `tls.env` (uvicorn на :8765) |
-
-Панель **Сертификаты**: продление, новый DNS, автопродление, оповещения в **Кабинет**.
-
----
-
-## API агента (Bearer token)
-
-| Метод | URL | Описание |
-|-------|-----|----------|
-| GET | `/api/v1/health` | Healthcheck |
-| GET | `/api/v1/ports` | Порты и свободный Wi‑Fi слот |
-| GET | `/api/v1/username-available` | Проверка имени перед provision |
-| POST | `/api/v1/provision` | `{ "username", "wifi", "mobile" }` |
-| POST | `/api/v1/delete` | Удаление конфига |
-| POST | `/api/v1/nodes/register` | Регистрация agent (install.sh) |
-| GET | `/api/v1/agent/install.sh?token=` | Bootstrap |
-| GET | `/api/v1/agent/bundle.tar.gz?token=` | Архив для agent |
-
-Заголовок: `Authorization: Bearer TOKEN`
-
----
-
-## Файлы на сервере
+## Структура файлов
 
 ```
-/opt/vless-manager/
-├── vless_manager.sh
-├── install_vless_manager.sh
-└── panel/
-    ├── run_panel_dual.sh      # HTTPS + HTTP fallback
-    └── ...
-
 /etc/vless-manager/
-├── tls.env
-├── cf.env                     # hostname/path/port Cloudflare обхода
-├── cf-clients/*.uuid          # клиенты универсального профиля
-├── clients/*.json
-├── urls/*.txt
-├── qr-codes/*.png
-├── mobile-reality/
-└── panel/                     # panel.db, secret.key, agent.env
+├── hysteria-clients/    # <name>.cred — логин:пароль клиента (авторизация Hysteria2)
+├── urls/                # <name>.txt (Hysteria2), <name>-pc.txt (PC VLESS)
+├── qr-codes/            # <name>.png (Hysteria2), <name>-pc.png (PC VLESS)
+├── tls.env              # TLS_MODE, PUBLIC_HOST, пути LE
+├── hysteria.env         # HY2_OBFS — пароль обфускации Salamander
+└── clients.db           # legacy-БД (не используется панелью для Hysteria2)
 
-/usr/local/bin/vless-servers   # start | stop | reconcile
+/etc/hysteria/config.yaml   # конфиг сервера (пересобирается автоматически)
+/opt/vless-manager/         # установленные скрипты и панель
 ```
 
 ---
 
-## Только web-панель (Xray уже есть)
+## FAQ / диагностика
+
+### Клиент не подключается
+1. `systemctl is-active hysteria-server` → `active`.
+2. `ss -ulnp | grep 25001` — порт слушается.
+3. `ufw status | grep 25001` — порт открыт.
+4. Проверьте внешнюю доступность: `nc -vzu IP 25001` (или check-host.net).
+
+### Мобильный интернет не работает, Wi‑Fi работает
+- Hysteria2 идёт по UDP — проверьте, что мобильный оператор не режет UDP (редко, но бывает).
+- Убедитесь, что в ссылке `sni=` соответствует домену сертификата.
+
+### Hysteria2 на ПК (NekoRay) ругается `authentication failed, status code: 404`
+- Это особенность TUN-inbound sing-box/NekoRay на Windows, а не сервер Hysteria2.
+- Используйте карточку клиента → **VLESS TCP+TLS (ПК / NekoRay)** или файл `/etc/vless-manager/urls/<name>-pc.txt`.
+- Телефонный Hysteria2 при этом не трогается и продолжает работать.
+
+### Хочу домен после установки с самоподписью
+Выпустите LE и укажите в панели (**Сертификаты** → «Перевыпустить»), либо вручную пропишите пути в `/etc/vless-manager/tls.env` и выполните:
 
 ```bash
-cd vless-manager
-sudo ./panel/install_panel.sh
+/opt/vless-manager/vless_manager.sh cli ensure-hy2
 ```
 
----
-
-## Обновление
-
-**`/opt/vless-manager` обычно не git-репозиторий** — `git pull` там не сработает. Используйте скрипт (клонирует свежий код во `/tmp` и ставит в `/opt`):
-
-```bash
-sudo cp -a /etc/vless-manager /etc/vless-manager.backup.$(date +%F)
-curl -fsSL https://raw.githubusercontent.com/sweetpotatohack/vless-manager/main/scripts/update_from_github.sh -o /tmp/vless-update.sh
-sudo bash /tmp/vless-update.sh
-```
-
-Либо с уже скачанным репозиторием:
-
-```bash
-git clone --depth 1 https://github.com/sweetpotatohack/vless-manager.git /tmp/vless-manager-upd
-sudo bash /tmp/vless-manager-upd/scripts/update_from_github.sh
-```
-
-**Не запускайте** `panel/install_panel.sh` напрямую из `/opt/vless-manager/panel/` — он считает «репо» = `/opt` и не подтянет новый код с GitHub (и раньше падал на `cp` в тот же файл).
-
-Если разрабатываете в git-клоне на сервере:
-
-```bash
-sudo cp -a /etc/vless-manager /etc/vless-manager.backup.$(date +%F)
-cd /path/to/vless-manager && git pull
-sudo bash panel/install_panel.sh
-sudo systemctl restart vless-xray vless-panel
-```
-
----
-
-## Переменные окружения (панель)
-
-| Переменная | По умолчанию | Описание |
-|------------|--------------|----------|
-| `VLESS_PANEL_HTTPS_PORT` | 8765 | HTTPS панели |
-| `VLESS_PANEL_HTTP_PORT` | 8766 | HTTP fallback |
-| `VLESS_PANEL_MASTER_URL` | из tls.env | URL master для agent install |
-| `VLESS_PANEL_AGENT_TOKEN` | random | Bearer на agent-ноде |
-| `VLESS_PANEL_ROLE` | master / agent | Тип установки |
-| `VLESS_TLS_ENV` | /etc/vless-manager/tls.env | LE для HTTPS панели |
-
----
-
-## Безопасность
-
-- Смените **admin** сразу; включите SMTP/Telegram в **Кабинет** для cert-alerts.
-- Ограничьте **8766** по IP (аварийный HTTP); **8765** — HTTPS с LE.
-- CSRF + rate limit на `/login`; пароли — bcrypt.
-- Agent **8765** на remote: по возможности только с IP master.
-- Не коммитьте `agent.env`, `tls.env`, PAT.
-
----
-
-## Логи и отладка
-
-```bash
-journalctl -u vless-panel -u vless-xray -u hysteria-server -u xray-reality -f
-ss -tulnp | egrep ':(443|8765|8766|25001|250[0-9]{2})'
-curl -sSk https://127.0.0.1:8765/api/v1/health
-curl -sS http://127.0.0.1:8766/api/v1/health
-```
-
----
-
-## Обход блокировок через Cloudflare (универсальный профиль)
-
-Если провайдер/регион режет прямой доступ к IP сервера (SYN-пакеты не доходят), вход выносится за IP Cloudflare. Это и есть **универсальный профиль** для клиентов — один конфиг для Wi‑Fi и мобильного интернета.
-
-```text
-Клиент → Cloudflare:443 (TLS, SNI = vpn.<домен>) → сервер:8443 (VLESS + WebSocket + TLS)
-```
-
-### Автоматическая настройка (панель)
-
-1. Перенесите NS домена на Cloudflare (у регистратора) и дождитесь статуса **Active**.
-2. Cloudflare → **My Profile → API Tokens → Create Token** → шаблон **Edit zone DNS**, Zone Resources → Include → ваш домен.
-3. В панели откройте **Cloudflare**:
-   - вставьте API-токен;
-   - зона = `ваш_домен` (например `astrainalog.ru`);
-   - hostname = `vpn.ваш_домен` (подставляется сам), path `/ws-akuma67`, порт origin `8443`, SSL `Full`;
-   - **Сохранить и поднять xray-cf**.
-4. Нажмите **«Подготовить домен»** — панель через Cloudflare API создаст:
-   - DNS `A vpn → IP сервера` с проксированием (оранжевое облако);
-   - **Origin Rule**: `Hostname = vpn.<домен>` → destination port `8443`;
-   - SSL/TLS режим `Full`.
-5. Нажмите **«Проверить origin»**: HTTP `400/404/502/503` = Cloudflare достучался до origin; `521–524` = origin недоступен.
-
-### Выдача клиенту
-
-В **Proxy** создайте пользователя → кнопка **«Создать универсальный профиль + QR»**. В карточке клиента будет ссылка и QR:
-
-```text
-vless://UUID@vpn.ВАШ_ДОМЕН:443?encryption=none&security=tls&sni=vpn.ВАШ_ДОМЕН&fp=chrome&type=ws&path=%2Fws-akuma67&host=vpn.ВАШ_ДОМЕН#USER-cf
-```
-
-В v2rayN/v2rayTun: **MUX выключить**. Транспорт — **WebSocket**. Если в клиенте настроен релей/цепочка (`out1 -> out2`) — отключите её: релей режет UDP/DNS.
-
-### Ручная настройка (без панели)
-
-Тот же результат дают команды CLI:
-
-```bash
-/opt/vless-manager/vless_manager.sh cli ensure-cf        # unit + ufw 8443 + конфиг xray-cf
-/opt/vless-manager/vless_manager.sh cli create-cf USER   # клиент + ссылка + QR
-```
-
-А в Cloudflare вручную: запись `A vpn → IP` (proxied), **Origin Rule** `Hostname = vpn.<домен>` → порт `8443`, SSL-режим `Full`.
-
-### Доступ к панели через Cloudflare
-
-Если прямой IP тоже заблокирован, панель выносится за Cloudflare так же:
-
-1. Cloudflare → DNS: запись `A panel → IP сервера`, проксирование включено.
-2. **Rules → Origin Rules**: `Hostname = panel.<домен>` → destination port `8765`.
-3. SSL/TLS режим `Full`.
-4. Откройте `https://panel.<домен>` (это и есть web-панель).
-
-На сервере порт `8765/tcp` должен быть открыт в ufw:
-
-```bash
-ufw allow 8765/tcp comment 'vless-panel-https'
-```
-
-> Порт `8766` (HTTP fallback без TLS) наружу не открывайте — только по SSH-туннелю при поломке сертификатов.
-
-### Серверная часть (как это устроено)
-
-- Конфиг `/etc/xray-cf/config.json` — VLESS + WebSocket + TLS, слушает `:8443`.
-- Юнит `xray-cf.service` (systemd, автозапуск).
-- Клиенты — `/etc/vless-manager/cf-clients/*.uuid`, конфиг пересобирается автоматически при создании/удалении.
-- Сертификат — Let's Encrypt из `tls.env` (тот же, что для панели); режим `Full` не валидирует origin-сертификат.
-- Firewall: `ufw allow 8443/tcp comment 'cloudflare-ws'`.
+### Где пароль admin?
+По умолчанию `admin / admin`. Сменить: **Кабинет** → пароль.
 
 ---
 
 ## Лицензия
 
-См. [LICENSE](LICENSE). Автор CLI/форка: AKUMA0xDEAD; panel/multi-node — [sweetpotatohack/vless-manager](https://github.com/sweetpotatohack/vless-manager).
+MIT — см. [LICENSE](LICENSE).

@@ -48,3 +48,5 @@ def run_migrations() -> None:
         _add_column(conn, "panel_settings", "cf_ssl_mode", "cf_ssl_mode VARCHAR(16) DEFAULT 'full'")
         _add_column(conn, "proxy_users", "cf_vless_url", "cf_vless_url TEXT")
         _add_column(conn, "agent_jobs", "cf_vless_url", "cf_vless_url TEXT")
+        _add_column(conn, "proxy_users", "has_hy2", "has_hy2 BOOLEAN DEFAULT 0")
+        _add_column(conn, "agent_jobs", "has_hy2", "has_hy2 BOOLEAN DEFAULT 0")

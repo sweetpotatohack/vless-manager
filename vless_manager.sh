@@ -34,6 +34,7 @@ readonly HYSTERIA_CONFIG="/etc/hysteria/config.yaml"
 readonly HYSTERIA_ENV="$CONFIG_DIR/hysteria.env"
 readonly HYSTERIA_CERT_DIR="/etc/hysteria/certs"
 readonly HYSTERIA_PORT=25001
+readonly HYSTERIA_CLIENTS_DIR="$CONFIG_DIR/hysteria-clients"
 readonly VLESS_NEVER_PORTS=(80 443 8080 8443 8000 8888 3000 5000 3333 53 853 4443 9443 9444)
 # Cloudflare обход (VLESS + WebSocket): общий inbound :8443, клиент стучится на CF :443
 readonly CF_ENV="$CONFIG_DIR/cf.env"
@@ -128,8 +129,8 @@ BANNER
 # Show menu
 show_menu() {
     echo -e "${BLUE}╔══════════════════ ГЛАВНОЕ МЕНЮ ══════════════════╗${NC}"
-    echo -e "${BLUE}║ 1) Создать новый VLESS конфиг (ПК / Wi‑Fi)       ║${NC}"
-    echo -e "${BLUE}║ 10) Мобила — REALITY :443 + Hysteria2 :25001    ║${NC}"
+    echo -e "${BLUE}║ 1) Создать конфиг Hysteria2 (Wi‑Fi + LTE)        ║${NC}"
+    echo -e "${BLUE}║ 10) (legacy) VLESS/REALITY — не рекомендуется   ║${NC}"
     echo -e "${BLUE}║ 2) Показать существующие конфиги                ║${NC}"
     echo -e "${BLUE}║ 3) Удалить конфиг                               ║${NC}"
     echo -e "${BLUE}║ 4) Показать активные подключения                ║${NC}"
@@ -334,25 +335,81 @@ build_mobile_reality_url() {
 }
 
 load_hysteria_env() {
-    HY2_PASS=""
+    HY2_OBFS=""
     [[ -f "$HYSTERIA_ENV" ]] && source "$HYSTERIA_ENV"
 }
 
-ensure_hysteria_password() {
+# Пароль обфускации Salamander (общий для всех клиентов, это не авторизация)
+ensure_hysteria_obfs_password() {
     load_hysteria_env
-    if [[ -n "${HY2_PASS:-}" ]]; then
+    if [[ -n "${HY2_OBFS:-}" ]]; then
         return 0
     fi
-    HY2_PASS=$(openssl rand -base64 18 | tr -d '/+=' | head -c 20)
-    echo "HY2_PASS=${HY2_PASS}" > "$HYSTERIA_ENV"
+    HY2_OBFS=$(openssl rand -hex 8)
+    umask 077
+    if [[ -f "$HYSTERIA_ENV" ]]; then
+        grep -q '^HY2_OBFS=' "$HYSTERIA_ENV" || echo "HY2_OBFS=${HY2_OBFS}" >> "$HYSTERIA_ENV"
+    else
+        echo "HY2_OBFS=${HY2_OBFS}" > "$HYSTERIA_ENV"
+    fi
     chmod 600 "$HYSTERIA_ENV"
 }
 
+# Список имён клиентов Hysteria2 (по файлам <name>.cred)
+hysteria_clients_list() {
+    local f name
+    [[ -d "$HYSTERIA_CLIENTS_DIR" ]] || return 0
+    for f in "$HYSTERIA_CLIENTS_DIR"/*.cred; do
+        [[ -f "$f" ]] || continue
+        name=$(basename "$f" .cred)
+        [[ -n "$name" ]] && echo "$name"
+    done
+}
+
+hysteria_client_password() {
+    local name="$1"
+    [[ -f "$HYSTERIA_CLIENTS_DIR/${name}.cred" ]] || return 1
+    tr -d '\r\n ' < "$HYSTERIA_CLIENTS_DIR/${name}.cred"
+}
+
+# Сертификат для Hysteria2: LE (домен) или самоподпись на IP
+hysteria_cert_paths() {
+    load_tls_env
+    if tls_uses_letsencrypt; then
+        echo "$LE_FULLCHAIN|$LE_PRIVKEY"
+        return 0
+    fi
+    local ip crt key
+    ip=$(get_server_ip)
+    crt="$HYSTERIA_CERT_DIR/selfsigned.crt"
+    key="$HYSTERIA_CERT_DIR/selfsigned.key"
+    if [[ ! -f "$crt" || ! -f "$key" ]]; then
+        mkdir -p "$HYSTERIA_CERT_DIR"
+        openssl req -x509 -nodes -newkey rsa:2048 -keyout "$key" -out "$crt" -days 8250 \
+            -subj "/CN=${ip}" -addext "subjectAltName=IP:${ip}" 2>/dev/null || \
+        openssl req -x509 -nodes -newkey rsa:2048 -keyout "$key" -out "$crt" -days 8250 \
+            -subj "/CN=${ip}" 2>/dev/null
+        chmod 600 "$key" 2>/dev/null || true
+        chmod 644 "$crt" 2>/dev/null || true
+    fi
+    echo "$crt|$key"
+    return 0
+}
+
+# URL клиента: hysteria2://user:pass@IP:25001/?sni=...#name
 build_hysteria_url() {
-    local client_name="$1" host
+    local client_name="$1" password="$2" host sni insecure_q
     load_hysteria_env
-    host=$(get_public_host)
-    echo "hysteria2://${HY2_PASS}@${host}:${HYSTERIA_PORT}?sni=${host}#${client_name}-hy2"
+    load_tls_env
+    host=$(get_server_ip)   # прямой IP: Cloudflare не проксирует UDP 25001
+    if tls_uses_letsencrypt; then
+        sni=$(get_public_host)
+        insecure_q=""
+    else
+        sni="$host"
+        insecure_q="&insecure=1"
+    fi
+    echo "hysteria2://${client_name}:${password}@${host}:${HYSTERIA_PORT}/?sni=${sni}&obfs=salamander&obfs-password=${HY2_OBFS}${insecure_q}#${client_name}"
 }
 
 # ═══════════ Cloudflare обход (VLESS + WebSocket) ═══════════
@@ -706,73 +763,194 @@ sync_hysteria_certs() {
     chmod 600 "$HYSTERIA_CERT_DIR/privkey.pem" 2>/dev/null || true
 }
 
-setup_hysteria_mobile() {
-    load_tls_env
-    ensure_hysteria_password
-    sync_hysteria_certs || {
-        echo -e "${RED}Нужен Let's Encrypt для Hysteria2${NC}"
-        return 1
-    }
-    local public_host
-    public_host=$(get_public_host)
-    mkdir -p /etc/hysteria
-    cat > "$HYSTERIA_CONFIG" << EOF
-listen: :${HYSTERIA_PORT}
+ensure_hysteria_binary() {
+    if command -v hysteria >/dev/null 2>&1 || [[ -x /usr/local/bin/hysteria ]]; then
+        return 0
+    fi
+    echo -e "${YELLOW}Устанавливаю Hysteria2...${NC}"
+    curl -fsSL -o /usr/local/bin/hysteria \
+        "https://github.com/apernet/hysteria/releases/download/app/v2.12.3/hysteria-linux-amd64" && \
+        chmod +x /usr/local/bin/hysteria || return 1
+}
 
-tls:
-  cert: ${HYSTERIA_CERT_DIR}/fullchain.pem
-  key: ${HYSTERIA_CERT_DIR}/privkey.pem
-
-auth:
-  type: password
-  password: ${HY2_PASS}
-
-ignoreClientBandwidth: true
-
-quic:
-  initStreamReceiveWindow: 8388608
-  maxStreamReceiveWindow: 8388608
-  initConnReceiveWindow: 20971520
-  maxConnReceiveWindow: 20971520
-EOF
+install_hysteria_unit() {
     cat > /etc/systemd/system/hysteria-server.service << 'UNIT'
 [Unit]
-Description=Hysteria2 mobile backup (UDP)
+Description=Hysteria2 VPN server (vless-manager)
 After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/hysteria server --config /etc/hysteria/config.yaml
 Restart=on-failure
+RestartSec=5s
 LimitNOFILE=65535
 
 [Install]
 WantedBy=multi-user.target
 UNIT
-    if ! command -v hysteria >/dev/null 2>&1; then
-        echo -e "${YELLOW}Устанавливаю Hysteria2...${NC}"
-        curl -fsSL -o /usr/local/bin/hysteria \
-            "https://github.com/apernet/hysteria/releases/download/app/v2.12.3/hysteria-linux-amd64" && \
-            chmod +x /usr/local/bin/hysteria || return 1
-    fi
-    local hook="/etc/letsencrypt/renewal-hooks/post/vless-hysteria-cert-copy.sh"
-    cat > "$hook" << 'HOOK'
-#!/bin/bash
-set -e
-for d in /etc/letsencrypt/live/*/; do
-  [[ -f "$d/fullchain.pem" && -f "$d/privkey.pem" ]] || continue
-  cp -f "$d/fullchain.pem" /etc/hysteria/certs/fullchain.pem
-  cp -f "$d/privkey.pem" /etc/hysteria/certs/privkey.pem
-  break
-done
-HOOK
-    chmod +x "$hook"
     systemctl daemon-reload
     systemctl enable hysteria-server.service >/dev/null 2>&1 || true
+}
+
+# Пересобрать /etc/hysteria/config.yaml из клиентов в hysteria-clients/ и перезапустить
+rebuild_hysteria_config() {
+    ensure_hysteria_obfs_password
+    load_hysteria_env
+    local cert_key cert key
+    cert_key=$(hysteria_cert_paths)
+    cert="${cert_key%%|*}"
+    key="${cert_key##*|}"
+    mkdir -p "$HYSTERIA_CLIENTS_DIR" /etc/hysteria
+
+    HY2_PORT="$HYSTERIA_PORT" HYSTERIA_CERT="$cert" HYSTERIA_KEY="$key" \
+    HY2_OBFS="${HY2_OBFS}" HY2_CLIENTS_DIR="$HYSTERIA_CLIENTS_DIR" python3 << 'PY'
+import json, os, glob
+port = int(os.environ.get("HY2_PORT", "25001"))
+cert = os.environ["HYSTERIA_CERT"]
+key = os.environ["HYSTERIA_KEY"]
+obfs = os.environ.get("HY2_OBFS", "")
+cdir = os.environ.get("HY2_CLIENTS_DIR", "/etc/vless-manager/hysteria-clients")
+
+clients = {}
+for path in sorted(glob.glob(cdir + "/*.cred")):
+    name = os.path.basename(path)[:-len(".cred")]
+    if not name:
+        continue
+    with open(path) as f:
+        password = f.read().strip()
+    if password:
+        clients[name] = password
+
+if clients:
+    auth_block = "auth:\n  type: userpass\n  userpass:\n" + "\n".join(
+        f'    "{name}": "{password}"' for name, password in sorted(clients.items())
+    )
+else:
+    auth_block = "auth:\n  type: password\n  password: \"__empty__\""
+
+obfs_block = ""
+if obfs:
+    obfs_block = (
+        "obfs:\n"
+        "  type: salamander\n"
+        "  salamander:\n"
+        f'    password: "{obfs}"\n'
+    )
+
+cfg = (
+    f"listen: :{port}\n\n"
+    f"tls:\n  cert: {cert}\n  key: {key}\n\n"
+    f"{auth_block}\n"
+    f"{obfs_block}"
+    "ignoreClientBandwidth: true\n\n"
+    "quic:\n"
+    "  initStreamReceiveWindow: 8388608\n"
+    "  maxStreamReceiveWindow: 8388608\n"
+    "  initConnReceiveWindow: 20971520\n"
+    "  maxConnReceiveWindow: 20971520\n"
+)
+with open("/etc/hysteria/config.yaml", "w") as f:
+    f.write(cfg)
+print(len(clients))
+PY
+}
+
+restart_hysteria_service() {
+    install_hysteria_unit
+    if ! /usr/local/bin/hysteria server -c /etc/hysteria/config.yaml --disable-update-check -h >/dev/null 2>&1; then
+        : # validate не мешает — бинарь уже есть
+    fi
     systemctl restart hysteria-server.service 2>/dev/null || systemctl start hysteria-server.service
     iptables -C INPUT -p udp --dport "$HYSTERIA_PORT" -j ACCEPT 2>/dev/null || \
         iptables -I INPUT -p udp --dport "$HYSTERIA_PORT" -j ACCEPT 2>/dev/null || true
-    log "INFO" "Hysteria2 UDP :${HYSTERIA_PORT} (запасной профиль LTE)"
+    if command -v ufw >/dev/null 2>&1; then
+        ufw allow "${HYSTERIA_PORT}/udp" comment 'hysteria2' >/dev/null 2>&1 || true
+    fi
+}
+
+# Полная настройка Hysteria2 (бинарь, cert, unit, пересборка, запуск)
+setup_hysteria_mobile() {
+    ensure_hysteria_binary || return 1
+    ensure_hysteria_obfs_password
+    if tls_uses_letsencrypt; then
+        sync_hysteria_certs
+    fi
+    hysteria_cert_paths >/dev/null || return 1
+    rebuild_hysteria_config
+    restart_hysteria_service
+    log "INFO" "Hysteria2 UDP :${HYSTERIA_PORT} (универсальный профиль)"
+}
+
+# Создать клиента Hysteria2: <name>.cred + пересборка + URL + QR
+create_hysteria_client() {
+    local client_name="$1" password url qr_path=""
+    if [[ -z "$client_name" ]]; then
+        echo -e "${RED}Имя клиента не может быть пустым!${NC}"
+        return 1
+    fi
+    if [[ "$client_name" =~ [^a-zA-Z0-9._-] ]]; then
+        echo -e "${RED}Имя только латиницей, цифры, точка, дефис, подчёркивание${NC}"
+        return 1
+    fi
+    if [[ -f "$HYSTERIA_CLIENTS_DIR/${client_name}.cred" ]]; then
+        echo -e "${RED}Конфиг «$client_name» уже существует!${NC}"
+        return 1
+    fi
+    if ! ensure_hysteria_binary; then
+        return 1
+    fi
+    setup_hysteria_mobile || return 1
+    password=$(openssl rand -hex 10)
+    mkdir -p "$HYSTERIA_CLIENTS_DIR" "$CONFIG_DIR/urls" "$QR_DIR"
+    printf '%s\n' "$password" > "$HYSTERIA_CLIENTS_DIR/${client_name}.cred"
+    chmod 600 "$HYSTERIA_CLIENTS_DIR/${client_name}.cred"
+    rebuild_hysteria_config || {
+        rm -f "$HYSTERIA_CLIENTS_DIR/${client_name}.cred"
+        return 1
+    }
+    restart_hysteria_service
+    url=$(build_hysteria_url "$client_name" "$password")
+    echo "$url" > "$CONFIG_DIR/urls/${client_name}.txt"
+    generate_qr_code "$url" "$client_name" >/dev/null 2>&1 && qr_path="$QR_DIR/${client_name}.png"
+    echo -e "${GREEN}Клиент Hysteria2 создан: ${client_name}${NC}"
+    echo "$url"
+    [[ -n "$qr_path" ]] && echo -e "${BLUE}QR: $qr_path${NC}"
+    return 0
+}
+
+# Удалить клиента Hysteria2
+hysteria_client_delete() {
+    local client_name="$1"
+    [[ -n "$client_name" ]] || return 1
+    rm -f "$HYSTERIA_CLIENTS_DIR/${client_name}.cred"
+    rm -f "$CONFIG_DIR/urls/${client_name}.txt"
+    rm -f "$QR_DIR/${client_name}.png"
+    rebuild_hysteria_config 2>/dev/null || true
+    restart_hysteria_service 2>/dev/null || true
+    log "INFO" "Удалён клиент Hysteria2: $client_name"
+    return 0
+}
+
+# Удалить отдельный PC VLESS (TCP+TLS) конфиг — не трогает Hysteria2
+hysteria_pc_vless_delete() {
+    local client_name="$1"
+    local config_name="${client_name}-pc"
+    [[ -n "$client_name" ]] || return 1
+    /usr/local/bin/vless-servers stop "$config_name" 2>/dev/null || true
+    rm -f "$CLIENT_DIR/${config_name}.json"
+    rm -f "$CONFIG_DIR/urls/${config_name}.txt"
+    rm -f "$QR_DIR/${config_name}.png"
+    rm -f "$BUNDLE_DIR/${config_name}.sing-box.json"
+    if ! tls_uses_letsencrypt; then
+        rm -f "$CERT_DIR/${config_name}.crt" "$CERT_DIR/${config_name}.key"
+    fi
+    if [[ -f "$CONFIG_DIR/clients.db" ]]; then
+        sqlite3 "$CONFIG_DIR/clients.db" "DELETE FROM clients WHERE name='$config_name';" 2>/dev/null || true
+    fi
+    log "INFO" "Удалён PC VLESS клиент: $config_name"
+    return 0
 }
 
 restart_xray_reality() {
@@ -1952,29 +2130,31 @@ system_settings_menu() {
 # Create VLESS config (enhanced with QR)
 create_vless_config() {
     local client_name="$1"
-    
+    local profile="${2:-}"
+    local config_name="${client_name}${profile}"
+
     if [[ -z "$client_name" ]]; then
         echo -e "${RED}Имя клиента не может быть пустым!${NC}"
         return 1
     fi
-    
-    if [[ -f "$CLIENT_DIR/${client_name}.json" ]]; then
-        echo -e "${YELLOW}Конфиг для $client_name уже существует!${NC}"
+
+    if [[ -f "$CLIENT_DIR/${config_name}.json" ]]; then
+        echo -e "${YELLOW}Конфиг для $config_name уже существует!${NC}"
         return 1
     fi
-    
+
     local uuid port server_ip
     uuid=$(generate_uuid)
     port=$(find_free_port "$VLESS_PORT_MIN" "$VLESS_PORT_MAX")
     server_ip=$(get_server_ip)
-    
+
     if [[ "$port" == "0" ]]; then
         echo -e "${RED}Не удалось найти свободный порт!${NC}"
         return 1
     fi
-    
+
     echo -e "${YELLOW}Генерация TLS для VLESS поверх TCP (стабильнее WebSocket в клиентах)...${NC}"
-    if ! generate_client_tls_cert "$server_ip" "$client_name"; then
+    if ! generate_client_tls_cert "$server_ip" "$config_name"; then
         return 1
     fi
     
@@ -1984,15 +2164,15 @@ create_vless_config() {
         cert_file="$LE_FULLCHAIN"
         key_file="$LE_PRIVKEY"
     else
-        cert_file="$CERT_DIR/${client_name}.crt"
-        key_file="$CERT_DIR/${client_name}.key"
+        cert_file="$CERT_DIR/${config_name}.crt"
+        key_file="$CERT_DIR/${config_name}.key"
     fi
-    
+
     local public_host
     public_host=$(get_public_host)
-    
+
     # VLESS + TCP + TLS + DNS/IPv4/sniffing (без WebSocket — меньше сбоев в v2rayNG/Nekoray)
-    cat > "$CLIENT_DIR/${client_name}.json" << EOF
+    cat > "$CLIENT_DIR/${config_name}.json" << EOF
 {
   "log": {
     "loglevel": "info"
@@ -2013,7 +2193,7 @@ create_vless_config() {
         "clients": [
           {
             "id": "$uuid",
-            "email": "${client_name}@vless.local"
+            "email": "${config_name}@vless.local"
           }
         ],
         "decryption": "none",
@@ -2064,35 +2244,35 @@ create_vless_config() {
 EOF
     
     local vless_url
-    vless_url=$(build_vless_url_from_config "$CLIENT_DIR/${client_name}.json" "$client_name")
-    echo "$vless_url" > "$CONFIG_DIR/urls/${client_name}.txt"
-    write_singbox_client_bundle "$client_name" "$uuid" "$port" "$public_host"
-    
+    vless_url=$(build_vless_url_from_config "$CLIENT_DIR/${config_name}.json" "$config_name")
+    echo "$vless_url" > "$CONFIG_DIR/urls/${config_name}.txt"
+    write_singbox_client_bundle "$config_name" "$uuid" "$port" "$public_host"
+
     # Generate QR code
     local qr_path=""
     echo -e "${YELLOW}🔄 Генерирую QR-код...${NC}"
-    if generate_qr_code "$vless_url" "$client_name"; then
-        qr_path="$QR_DIR/${client_name}.png"
+    if generate_qr_code "$vless_url" "$config_name"; then
+        qr_path="$QR_DIR/${config_name}.png"
         echo -e "${GREEN}✅ QR-код создан: $qr_path${NC}"
     fi
-    
+
     # Save to database
     init_database
     sqlite3 "$CONFIG_DIR/clients.db" << EOF
 INSERT INTO clients (name, uuid, port, config_path, url, qr_path) 
-VALUES ('$client_name', '$uuid', $port, '$CLIENT_DIR/${client_name}.json', '$vless_url', '$qr_path');
+VALUES ('$config_name', '$uuid', $port, '$CLIENT_DIR/${config_name}.json', '$vless_url', '$qr_path');
 EOF
-    
+
     # Setup enhanced networking
     setup_enhanced_iptables
-    
+
     # Start server (outside panel cgroup when started via systemd-run)
-    if ! /usr/local/bin/vless-servers start "$client_name"; then
-        echo -e "${RED}Не удалось запустить Xray для $client_name${NC}" >&2
+    if ! /usr/local/bin/vless-servers start "$config_name"; then
+        echo -e "${RED}Не удалось запустить Xray для $config_name${NC}" >&2
         return 1
     fi
     local started_port
-    started_port=$(extract_port_from_config "$CLIENT_DIR/${client_name}.json")
+    started_port=$(extract_port_from_config "$CLIENT_DIR/${config_name}.json")
     if [[ -n "$started_port" ]] && command -v ss >/dev/null 2>&1; then
         if ! ss -H -tln "sport = :$started_port" 2>/dev/null | grep -q .; then
             echo -e "${RED}Порт $started_port не слушается после запуска${NC}" >&2
@@ -2104,7 +2284,7 @@ EOF
     echo -e "${GREEN}╔════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${GREEN}║                    КОНФИГ СОЗДАН УСПЕШНО!                      ║${NC}"
     echo -e "${GREEN}╠════════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${CYAN}║ Клиент: $client_name${NC}"
+    echo -e "${CYAN}║ Клиент: $config_name${NC}"
     echo -e "${CYAN}║ UUID: $uuid${NC}"
     echo -e "${CYAN}║ Порт: $port${NC}"
     echo -e "${CYAN}║ Публичный IP: $server_ip | Адрес в ссылке: $public_host${NC}"
@@ -2112,16 +2292,16 @@ EOF
     echo -e "${YELLOW}║ VLESS URL:${NC}"
     echo -e "${WHITE}║ $vless_url${NC}"
     echo -e "${GREEN}╠════════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${BLUE}║ Конфиг: $CLIENT_DIR/${client_name}.json${NC}"
-    echo -e "${BLUE}║ URL: $CONFIG_DIR/urls/${client_name}.txt${NC}"
+    echo -e "${BLUE}║ Конфиг: $CLIENT_DIR/${config_name}.json${NC}"
+    echo -e "${BLUE}║ URL: $CONFIG_DIR/urls/${config_name}.txt${NC}"
     if [[ -n "$qr_path" ]]; then
         echo -e "${BLUE}║ QR-код: $qr_path${NC}"
     fi
-    echo -e "${BLUE}║ NekoBox/sing-box (с DNS «из коробки»): $BUNDLE_DIR/${client_name}.sing-box.json${NC}"
+    echo -e "${BLUE}║ NekoBox/sing-box (с DNS «из коробки»): $BUNDLE_DIR/${config_name}.sing-box.json${NC}"
     echo -e "${GREEN}╚════════════════════════════════════════════════════════════════╝${NC}"
     echo -e "${YELLOW}Подсказка: если при включении VPN «пропадает весь интернет» — в клиенте включите DNS${NC}"
     echo -e "${YELLOW}через прокси (remote/8.8.8.8), на Android отключите Private DNS; адрес в ссылке = $server_ip${NC}"
-    echo -e "${YELLOW}Импорт в NekoBox: «Из файла» → $BUNDLE_DIR/${client_name}.sing-box.json (или QR URL). Шифрование: см. templates/ШИФРОВАНИЕ.txt${NC}"
+    echo -e "${YELLOW}Импорт в NekoBox: «Из файла» → $BUNDLE_DIR/${config_name}.sing-box.json (или QR URL). Шифрование: см. templates/ШИФРОВАНИЕ.txt${NC}"
     echo -e "${YELLOW}Если таймаут до $server_ip:$port — откройте TCP $port в панели облака; см. templates/FIREWALL-HINT.txt${NC}"
     
     # Display QR in terminal
@@ -2352,14 +2532,14 @@ main_menu() {
                 echo -n "Введи имя клиента: "
                 read -r client_name
                 if [[ -n "$client_name" ]]; then
-                    create_vless_config "$client_name"
+                    create_hysteria_client "$client_name"
                 else
                     echo -e "${RED}Имя не может быть пустым!${NC}"
                 fi
                 read -p "Нажми Enter для продолжения..." 
                 ;;
             10)
-                echo -e "${CYAN}📱 REALITY :443 + Hysteria2 (LTE, kibervpn)${NC}"
+                echo -e "${CYAN}(legacy) VLESS REALITY :443 + Hysteria2${NC}"
                 echo -n "Введи имя клиента (например testuser-mob): "
                 read -r client_name
                 if [[ -n "$client_name" ]]; then
@@ -2420,9 +2600,33 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         cmd="${2:-}"
         name="${3:-}"
         case "$cmd" in
+            create-hy2)
+                [[ -n "$name" ]] || { echo "usage: cli create-hy2 NAME" >&2; exit 2; }
+                create_hysteria_client "$name"
+                exit $?
+                ;;
+            delete-hy2)
+                [[ -n "$name" ]] || { echo "usage: cli delete-hy2 NAME" >&2; exit 2; }
+                hysteria_client_delete "$name"
+                exit $?
+                ;;
+            list-hy2)
+                hysteria_clients_list
+                exit 0
+                ;;
             create-wifi)
                 [[ -n "$name" ]] || { echo "usage: cli create-wifi NAME" >&2; exit 2; }
                 create_vless_config "$name"
+                exit $?
+                ;;
+            create-pc)
+                [[ -n "$name" ]] || { echo "usage: cli create-pc NAME" >&2; exit 2; }
+                create_vless_config "$name" "-pc"
+                exit $?
+                ;;
+            delete-pc)
+                [[ -n "$name" ]] || { echo "usage: cli delete-pc NAME" >&2; exit 2; }
+                hysteria_pc_vless_delete "$name"
                 exit $?
                 ;;
             create-mobile)
@@ -2458,6 +2662,10 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                 setup_hysteria_mobile
                 exit $?
                 ;;
+            ensure-hy2)
+                setup_hysteria_mobile
+                exit $?
+                ;;
             set-public-host)
                 [[ -n "$name" ]] || { echo "usage: cli set-public-host NAME" >&2; exit 2; }
                 umask 077
@@ -2482,7 +2690,7 @@ EOF
                 exit 0
                 ;;
             *)
-                echo "usage: $0 cli create-wifi|create-mobile|create-cf|delete-client|delete-cf|ensure-cf|cf-status|set-public-host ..." >&2
+                echo "usage: $0 cli create-hy2|delete-hy2|list-hy2|create-wifi|create-pc|delete-pc|create-mobile|create-cf|delete-client|delete-cf|ensure-cf|cf-status|set-public-host ..." >&2
                 exit 2
                 ;;
         esac

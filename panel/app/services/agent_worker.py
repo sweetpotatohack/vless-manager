@@ -10,7 +10,7 @@ import httpx
 
 from app.services.provision import (
     build_client_catalog_for_master,
-    delete_local_client,
+    delete_local,
     provision_local,
 )
 from app.services.host_metrics import collect_host_metrics
@@ -92,8 +92,6 @@ async def _process_job(master: str, token: str, job: dict) -> dict:
     job_id = job["id"]
     job_type = job.get("job_type", "provision")
     username = job["username"]
-    wifi = bool(job.get("has_wifi", True))
-    mobile = bool(job.get("has_mobile", True))
 
     if job_type == "node_uninstall":
         await asyncio.to_thread(_run_node_uninstall)
@@ -104,9 +102,7 @@ async def _process_job(master: str, token: str, job: dict) -> dict:
         return {"job_id": job_id, "ok": True, "imported_clients": catalog}
 
     if job_type == "delete":
-        result = await asyncio.to_thread(
-            delete_local_client, username, wifi=wifi, mobile=mobile
-        )
+        result = await asyncio.to_thread(delete_local, username)
         return {
             "job_id": job_id,
             "ok": result.ok,
@@ -114,17 +110,14 @@ async def _process_job(master: str, token: str, job: dict) -> dict:
         }
 
     await _apply_vpn_domain_from_master(master, token)
-    result = await asyncio.to_thread(
-        provision_local, username, wifi=wifi, mobile=mobile
-    )
+    result = await asyncio.to_thread(provision_local, username)
     if not result.ok:
         return {"job_id": job_id, "ok": False, "error_message": result.message}
     return {
         "job_id": job_id,
         "ok": True,
-        "wifi_vless_url": result.wifi_vless_url,
-        "mobile_vless_url": result.mobile_vless_url,
         "hysteria_url": result.hysteria_url,
+        "wifi_vless_url": result.wifi_vless_url,
         "wifi_port": result.wifi_port,
         "uuid": result.uuid,
     }

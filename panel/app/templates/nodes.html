@@ -36,9 +36,9 @@
     <input type="text" name="name" required placeholder="frankfurt-1">
     <label>Страна (для выбора в Proxy)</label>
     <input type="text" name="country" required placeholder="Germany / USA / Singapore">
-    <label>Домен VPN (DNS в VLESS-ссылках и в Proxy)</label>
-    <input type="text" name="domain" required placeholder="proxy.example.com">
-    <p class="hint">A/AAAA этого имени → публичный IP ноды. После install agent подставит его в tls.env (PUBLIC_HOST).</p>
+    <label>Домен VPN (SNI в Hysteria2-ссылках, для валидного Let's Encrypt)</label>
+    <input type="text" name="domain" placeholder="proxy.example.com">
+    <p class="hint">A/AAAA этого имени → публичный IP ноды. После install agent подставит его в tls.env (PUBLIC_HOST). Можно оставить пустым — тогда SNI будет IP (самоподписанный сертификат).</p>
     <button type="submit" class="btn btn-cyan btn-lg">Сгенерировать агент</button>
   </form>
 </div>
@@ -51,14 +51,12 @@
     <tbody>
       <tr><td data-label="Порт"><code>8765/tcp</code></td><td data-label="Назначение">Панель/API agent (исходящий HTTPS к master достаточен для provision; порт — для диагностики)</td></tr>
       <tr><td data-label="Порт"><code>8766/tcp</code></td><td data-label="Назначение">HTTP fallback панели agent</td></tr>
-      <tr><td data-label="Порт"><code>25000–45000/tcp</code></td><td data-label="Назначение">Wi‑Fi VLESS (inbound на каждого клиента)</td></tr>
-      <tr><td data-label="Порт"><code>443/tcp</code></td><td data-label="Назначение">LTE — VLESS REALITY</td></tr>
-      <tr><td data-label="Порт"><code>25001/udp</code></td><td data-label="Назначение">LTE — Hysteria2</td></tr>
+      <tr><td data-label="Порт"><code>25001/udp</code></td><td data-label="Назначение">Hysteria2 — универсальный профиль клиента</td></tr>
       <tr><td data-label="Порт"><code>80/tcp</code></td><td data-label="Назначение">Let's Encrypt (certbot), если выпускаете LE на agent</td></tr>
     </tbody>
   </table>
   </div>
-  <p class="hint">С master до agent по LAN IP ходить не нужно: конфиги создаются через очередь (agent → master). IP в таблице — белый egress (ident.me / ipify), обновляется при register и heartbeat agent. Клиентам VPN нужен DNS ноды и порты выше.</p>
+  <p class="hint">С master до agent по LAN IP ходить не нужно: конфиги создаются через очередь (agent → master). IP в таблице — белый egress (ident.me / ipify), обновляется при register и heartbeat agent. Клиентам VPN нужен IP ноды и UDP 25001.</p>
 </div>
 
 <div class="card">

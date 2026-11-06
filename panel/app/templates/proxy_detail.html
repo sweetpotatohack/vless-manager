@@ -6,29 +6,15 @@
 {% endif %}
 
 <p style="color:var(--muted)">
-  Нода: {{ node.name }} · {{ node.domain }} ·
+  Нода: {{ node.name }} ·
   выход: <strong>{{ user.exit_country or node.country }}</strong>,
   DNS <strong>{{ node_vpn_host(node) or user.exit_ip }}</strong>
 </p>
 
-{% if user.mobile_vless_url %}
-<div class="card">
-  <h3 style="margin-top:0">★ LTE — VLESS REALITY :443 (основной)</h3>
-  <p class="hint" style="margin-top:0">v2rayTun: Private DNS и MUX выключить. <strong>Пинг в приложении часто красный при REALITY</strong> — это нормально; проверяйте сайты/Telegram. Не используйте профиль Wi‑Fi (:25010) или Hy2 на LTE-тест.</p>
-  <div class="url-box">{{ user.mobile_vless_url }}</div>
-  {% if mobile_vless_ip_url and mobile_vless_ip_url != user.mobile_vless_url %}
-  <p class="hint">Если DNS режет домен — попробуйте с IP (SNI в ссылке не меняется):</p>
-  <div class="url-box">{{ mobile_vless_ip_url }}</div>
-  {% endif %}
-  {% if qr_mobile %}
-  <div class="qr-row"><img src="/qr/{{ qr_mobile }}?v=2" alt="QR REALITY LTE"></div>
-  {% endif %}
-</div>
-{% endif %}
-
 {% if user.hysteria_url %}
 <div class="card">
-  <h3 style="margin-top:0">LTE запасной — Hysteria2 UDP :25001</h3>
+  <h3 style="margin-top:0">Hysteria2 — телефон (Wi‑Fi и мобильный интернет)</h3>
+  <p class="hint" style="margin-top:0">Один конфиг для v2rayTun / NekoBox / v2rayN (hysteria2). UDP + обфускация Salamander.</p>
   <div class="url-box">{{ user.hysteria_url }}</div>
   {% if qr_hy2 %}
   <div class="qr-row"><img src="/qr/{{ qr_hy2 }}" alt="QR Hysteria2"></div>
@@ -36,30 +22,20 @@
 </div>
 {% endif %}
 
-{% if user.cf_vless_url %}
-<div class="card">
-  <h3 style="margin-top:0">★ Универсальный — Cloudflare WebSocket</h3>
-  <p class="hint" style="margin-top:0">Один профиль для Wi‑Fi и мобильного интернета. Клиент подключается к Cloudflare:443, тот проксирует на сервер (обход блокировок). В v2rayN/v2rayTun: MUX выключить.</p>
-  <div class="url-box">{{ user.cf_vless_url }}</div>
-  {% if qr_cf %}
-  <div class="qr-row"><img src="/qr/{{ qr_cf }}" alt="QR Cloudflare WS"></div>
-  {% endif %}
-</div>
-{% endif %}
-
 {% if user.wifi_vless_url %}
 <div class="card">
-  <h3 style="margin-top:0">Wi‑Fi / дом — VLESS TLS{% if user.wifi_port %} :{{ user.wifi_port }}{% endif %}</h3>
+  <h3 style="margin-top:0">VLESS TCP+TLS — ПК / NekoRay</h3>
+  <p class="hint" style="margin-top:0">Отдельный профиль для ПК (NekoRay / v2rayN): VLESS + TCP + TLS. Не трогает Hysteria2 и работает, когда Hysteria2 на ПК ругается на TUN.</p>
   <div class="url-box">{{ user.wifi_vless_url }}</div>
-  {% if qr_wifi %}
-  <div class="qr-row"><img src="/qr/{{ qr_wifi }}" alt="QR Wi-Fi"></div>
+  {% if qr_pc %}
+  <div class="qr-row"><img src="/qr/{{ qr_pc }}" alt="QR VLESS PC"></div>
   {% endif %}
 </div>
 {% endif %}
 
 <div class="form-actions">
   <a href="/proxy" class="btn btn-cyan">← К списку</a>
-  <form method="post" action="/proxy/{{ user.id }}/delete" onsubmit="return confirm('Удалить конфиг {{ user.username }}? Wi‑Fi и LTE на сервере будут сняты.');">
+  <form method="post" action="/proxy/{{ user.id }}/delete" onsubmit="return confirm('Удалить конфиги {{ user.username }}? Hysteria2 и PC VLESS на сервере будут сняты.');">
     {% include "csrf_input.html" %}
     <button type="submit" class="btn btn-red">Удалить конфиг</button>
   </form>

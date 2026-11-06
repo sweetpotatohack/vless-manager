@@ -33,7 +33,6 @@ from app.services.local_clients import (
     count_grouped_local_clients,
     list_grouped_local_clients,
     load_local_client_urls,
-    local_qr_filenames,
 )
 from app.database import Base, engine, get_db
 from app.deps import create_session_token, get_current_admin, get_optional_admin
@@ -42,6 +41,7 @@ from app.models import AdminUser, AgentJob, Node, ProxyUser
 from app.services.agent_queue import (
     create_delete_job,
     create_import_all_job,
+    create_provision_job,
     create_uninstall_node_job,
     reclaim_stale_jobs,
     remote_uses_job_queue,
@@ -77,14 +77,13 @@ from app.services.nodes_helpers import (
 from app.services.ports import port_status
 from app.services.provision import (
     ProvisionResult,
-    delete_cf_local,
-    delete_local_client,
+    build_client_catalog_for_master,
+    delete_local,
     delete_remote_client,
-    provision_cf_local,
-    provision_local,
     ensure_qr_codes_for_user,
+    provision_local,
+    provision_remote,
     qr_png_path,
-    reconcile_wifi_servers,
 )
 from app.services.cloudflare import (
     check_origin,
@@ -174,7 +173,6 @@ async def on_startup():
         get_settings(db)
     finally:
         db.close()
-    reconcile_wifi_servers()
     asyncio.create_task(cert_autorenew_worker())
     if os.environ.get("VLESS_PANEL_RUN_AGENT_WORKER", "1") == "1":
         start_agent_job_worker()
@@ -518,13 +516,7 @@ async def nodes_delete(
     users = db.query(ProxyUser).filter(ProxyUser.node_id == node_id).all()
     for pu in users:
         if remote_uses_job_queue(node) and token:
-            job = create_delete_job(
-                db,
-                node_id=node.id,
-                username=pu.username,
-                wifi=pu.has_wifi,
-                mobile=pu.has_mobile,
-            )
+            job = create_delete_job(db, node_id=node.id, username=pu.username)
             try:
                 done = await wait_for_job(job.id, timeout_sec=90.0)
                 if done.status == "failed":
@@ -532,13 +524,7 @@ async def nodes_delete(
             except TimeoutError:
                 remote_fail.append(pu.username)
         elif node.api_base and token:
-            result = await delete_remote_client(
-                node.api_base,
-                token,
-                pu.username,
-                wifi=pu.has_wifi,
-                mobile=pu.has_mobile,
-            )
+            result = await delete_remote_client(node.api_base, token, pu.username)
             if not result.ok:
                 remote_fail.append(pu.username)
         db.delete(pu)
@@ -601,6 +587,7 @@ def proxy_list(
     if not nodes:
         nodes = db.query(Node).filter(Node.is_active.is_(True)).order_by(Node.name).all()
     form_nodes = [n for n in nodes if n.role == "local"]
+    remote_nodes = [n for n in nodes if n.role != "local"]
     from sqlalchemy.orm import joinedload
 
     users = (
@@ -622,6 +609,7 @@ def proxy_list(
                 "admin": admin,
                 "nodes": [],
                 "form_nodes": [],
+                "remote_nodes": [],
                 "users": [],
                 "error": flash_err,
                 "flash_ok": flash_ok or request.query_params.get("msg"),
@@ -638,6 +626,7 @@ def proxy_list(
             "admin": admin,
             "nodes": nodes,
             "form_nodes": form_nodes,
+            "remote_nodes": remote_nodes,
             "users": users,
             "error": flash_err,
             "flash_ok": flash_ok or request.query_params.get("msg"),
@@ -666,6 +655,7 @@ async def proxy_create(
                 "admin": admin,
                 "nodes": [],
                 "form_nodes": [],
+                "remote_nodes": [],
                 "users": [],
                 "error": f"На agent-ноде клиентов не создают. Откройте master: {master}/proxy",
                 "is_agent": True,
@@ -677,8 +667,6 @@ async def proxy_create(
     node = db.get(Node, node_id)
     if not node or not node.is_active:
         raise HTTPException(400, "Нода недоступна — дождитесь online или выберите master")
-    if node.role != "local":
-        raise HTTPException(400, "Универсальный (Cloudflare) профиль доступен только на master-ноде")
 
     uname = username.strip()
     if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$", uname):
@@ -689,8 +677,41 @@ async def proxy_create(
         .first()
     )
 
-    cf_result = await asyncio.to_thread(provision_cf_local, uname)
-    if not cf_result.ok:
+    if node.role == "local":
+        result = await asyncio.to_thread(provision_local, uname)
+    else:
+        if not node.api_token:
+            raise HTTPException(400, "Удалённая нода недоступна (нет токена)")
+        if remote_uses_job_queue(node):
+            job = create_provision_job(
+                db,
+                node_id=node.id,
+                username=uname,
+                has_hy2=True,
+                has_wifi=True,
+            )
+            try:
+                done = await wait_for_job(job.id, timeout_sec=180.0)
+            except TimeoutError as e:
+                result = ProvisionResult(False, str(e))
+            else:
+                if done.status == "failed":
+                    result = ProvisionResult(False, done.error_message or "Ошибка на agent")
+                else:
+                    result = ProvisionResult(
+                        ok=True,
+                        message="OK",
+                        hysteria_url=done.hysteria_url,
+                        wifi_vless_url=done.wifi_vless_url,
+                        wifi_port=done.wifi_port,
+                        uuid=done.uuid,
+                    )
+        else:
+            if not node.api_base:
+                raise HTTPException(400, "Удалённая нода недоступна")
+            result = await provision_remote(node.api_base, node.api_token, uname)
+
+    if not result.ok:
         nodes = db.query(Node).filter(Node.is_active.is_(True)).all()
         users = db.query(ProxyUser).order_by(ProxyUser.created_at.desc()).limit(100).all()
         return templates.TemplateResponse(
@@ -701,8 +722,9 @@ async def proxy_create(
                 "admin": admin,
                 "nodes": nodes,
                 "form_nodes": [n for n in nodes if n.role == "local"],
+                "remote_nodes": [n for n in nodes if n.role != "local"],
                 "users": users,
-                "error": cf_result.message,
+                "error": result.message,
             },
             status_code=400,
         )
@@ -710,26 +732,23 @@ async def proxy_create(
     pu = dup or ProxyUser(node_id=node.id, username=uname)
     if not dup:
         db.add(pu)
-    pu.has_wifi = False
+    pu.has_wifi = bool(result.wifi_vless_url)
     pu.has_mobile = False
-    pu.wifi_vless_url = None
+    pu.has_hy2 = bool(result.hysteria_url)
+    pu.wifi_vless_url = result.wifi_vless_url
     pu.mobile_vless_url = None
-    pu.hysteria_url = None
-    pu.cf_vless_url = cf_result.cf_vless_url
-    pu.wifi_port = None
-    pu.uuid = cf_result.uuid
+    pu.hysteria_url = result.hysteria_url
+    pu.cf_vless_url = None
+    pu.wifi_port = result.wifi_port
+    pu.uuid = result.uuid or uname
     pu.exit_country = node.country or node.region or ""
     pu.exit_ip = node_vpn_host(node) or node.public_ip or ""
     db.commit()
     db.refresh(pu)
     ensure_qr_codes_for_user(
         uname,
-        wifi_vless_url=None,
-        mobile_vless_url=None,
-        hysteria_url=None,
-        cf_vless_url=cf_result.cf_vless_url,
-        has_wifi=False,
-        has_mobile=False,
+        hysteria_url=result.hysteria_url,
+        wifi_vless_url=result.wifi_vless_url,
     )
     return RedirectResponse(f"/proxy/{pu.id}", status_code=303)
 
@@ -785,10 +804,11 @@ def agent_proxy_local_view(
     urls = load_local_client_urls(username)
     if not urls:
         raise HTTPException(404, "Конфиг не найден на ноде")
-    qr_wifi, qr_mobile = local_qr_filenames(username)
+    hy2 = urls.get("hysteria_url")
+    pc_url = urls.get("wifi_vless_url")
+    if not hy2:
+        raise HTTPException(404, "Конфиг Hysteria2 не найден на ноде")
     master = get_master_public_url(request)
-    grouped = {g["username"]: g for g in list_grouped_local_clients()}
-    g = grouped.get(username) or {}
     return templates.TemplateResponse(
         "agent_proxy_local.html",
         {
@@ -796,10 +816,8 @@ def agent_proxy_local_view(
             "title": APP_TITLE,
             "admin": admin,
             "username": username,
-            "urls": urls,
-            "qr_wifi": qr_wifi,
-            "qr_mobile": qr_mobile,
-            "wifi_port": g.get("wifi_port"),
+            "hysteria_url": hy2,
+            "wifi_vless_url": pc_url,
             "master_proxy_url": f"{master.rstrip('/')}/proxy",
             "flash_err": request.query_params.get("err"),
         },
@@ -817,14 +835,9 @@ async def agent_proxy_local_delete(
     if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$", username):
         raise HTTPException(400)
     urls = load_local_client_urls(username)
-    has_wifi = bool(urls.get("wifi_vless_url"))
-    has_mobile = bool(urls.get("mobile_vless_url") or urls.get("hysteria_url"))
-    result = await asyncio.to_thread(
-        delete_local_client,
-        username,
-        wifi=has_wifi,
-        mobile=has_mobile,
-    )
+    has_hy2 = bool(urls.get("hysteria_url") or urls.get("wifi_vless_url"))
+    result = await asyncio.to_thread(delete_local, username) if has_hy2 else \
+        ProvisionResult(False, "Конфиг Hysteria2 не найден на ноде")
     if not result.ok:
         return RedirectResponse(
             f"/proxy/local/{username}?err={quote(result.message[:180])}",
@@ -850,30 +863,13 @@ def proxy_detail(
     if not pu:
         raise HTTPException(404)
     node = db.get(Node, pu.node_id)
-    mob_name = f"{pu.username}-mob" if pu.has_wifi and pu.has_mobile else pu.username
     ensure_qr_codes_for_user(
         pu.username,
-        wifi_vless_url=pu.wifi_vless_url,
-        mobile_vless_url=pu.mobile_vless_url,
         hysteria_url=pu.hysteria_url,
-        cf_vless_url=pu.cf_vless_url,
-        has_wifi=pu.has_wifi,
-        has_mobile=pu.has_mobile,
+        wifi_vless_url=pu.wifi_vless_url,
     )
-    qr_wifi = qr_png_path(pu.username, "wifi")
-    qr_mobile = qr_png_path(mob_name, "mobile")
-    qr_hy2 = qr_png_path(mob_name, "hy2") if pu.has_mobile else None
-    qr_cf = qr_png_path(pu.username, "cf") if pu.cf_vless_url else None
-    mobile_vless_ip_url = None
-    if pu.mobile_vless_url and node and (node.public_ip or "").strip():
-        ip = node.public_ip.strip()
-        if re.match(r"^\d+\.\d+\.\d+\.\d+$", ip):
-            mobile_vless_ip_url = re.sub(
-                r"@[^:/]+:",
-                f"@{ip}:",
-                pu.mobile_vless_url,
-                count=1,
-            )
+    qr_hy2 = qr_png_path(pu.username)
+    qr_pc = qr_png_path(pu.username, "pc")
     flash_err = request.query_params.get("err")
     return templates.TemplateResponse(
         "proxy_detail.html",
@@ -883,11 +879,8 @@ def proxy_detail(
             "admin": admin,
             "user": pu,
             "node": node,
-            "qr_wifi": qr_wifi.name if qr_wifi else None,
-            "qr_mobile": qr_mobile.name if qr_mobile else None,
             "qr_hy2": qr_hy2.name if qr_hy2 else None,
-            "qr_cf": qr_cf.name if qr_cf else None,
-            "mobile_vless_ip_url": mobile_vless_ip_url,
+            "qr_pc": qr_pc.name if qr_pc else None,
             "flash_err": flash_err,
         },
     )
@@ -908,13 +901,7 @@ async def proxy_delete(
         raise HTTPException(400, "Нода не найдена")
 
     if node.role == "local":
-        result = await asyncio.to_thread(
-            delete_local_client,
-            pu.username,
-            wifi=pu.has_wifi,
-            mobile=pu.has_mobile,
-            cf=bool(pu.cf_vless_url),
-        )
+        result = await asyncio.to_thread(delete_local, pu.username)
     else:
         if not node.api_token:
             raise HTTPException(400, "Удалённая нода недоступна")
@@ -923,8 +910,8 @@ async def proxy_delete(
                 db,
                 node_id=node.id,
                 username=pu.username,
-                wifi=pu.has_wifi,
-                mobile=pu.has_mobile,
+                has_hy2=True,
+                has_wifi=True,
             )
             try:
                 job = await wait_for_job(job.id)
@@ -938,13 +925,7 @@ async def proxy_delete(
         else:
             if not node.api_base:
                 raise HTTPException(400, "Удалённая нода недоступна")
-            result = await delete_remote_client(
-                node.api_base,
-                node.api_token,
-                pu.username,
-                wifi=pu.has_wifi,
-                mobile=pu.has_mobile,
-            )
+            result = await delete_remote_client(node.api_base, node.api_token, pu.username)
 
     if not result.ok:
         return RedirectResponse(
@@ -1424,6 +1405,7 @@ def api_agent_next_job(request: Request, db: Session = Depends(get_db)):
         "username": job.username,
         "has_wifi": job.has_wifi,
         "has_mobile": job.has_mobile,
+        "has_hy2": job.has_hy2,
     }
 
 
@@ -1590,9 +1572,7 @@ async def api_delete(
     _authorize_agent_api(request, db)
     body = await request.json()
     username = body.get("username", "")
-    wifi = bool(body.get("wifi", True))
-    mobile = bool(body.get("mobile", True))
-    result = delete_local_client(username, wifi=wifi, mobile=mobile)
+    result = delete_local(username)
     if not result.ok:
         raise HTTPException(400, result.message)
     return {"ok": True}
@@ -1606,20 +1586,12 @@ async def api_provision(
     _authorize_agent_api(request, db)
     body = await request.json()
     username = body.get("username", "")
-    wifi = bool(body.get("wifi"))
-    mobile = bool(body.get("mobile"))
-    from app.services.ports import ensure_can_provision
-
-    ok, msg = ensure_can_provision(wifi=wifi, mobile=mobile)
-    if not ok:
-        raise HTTPException(400, msg)
-    result = provision_local(username, wifi=wifi, mobile=mobile)
+    result = provision_local(username)
     if not result.ok:
         raise HTTPException(400, result.message)
     return {
-        "wifi_vless_url": result.wifi_vless_url,
-        "mobile_vless_url": result.mobile_vless_url,
         "hysteria_url": result.hysteria_url,
+        "wifi_vless_url": result.wifi_vless_url,
         "wifi_port": result.wifi_port,
         "uuid": result.uuid,
     }

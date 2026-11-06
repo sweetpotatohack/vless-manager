@@ -1,100 +1,63 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 from pathlib import Path
 
 VLESS_CONFIG_DIR = Path(os.environ.get("VLESS_CONFIG_DIR", "/etc/vless-manager"))
 URL_DIR = VLESS_CONFIG_DIR / "urls"
 QR_DIR = VLESS_CONFIG_DIR / "qr-codes"
+HYSTERIA_DIR = VLESS_CONFIG_DIR / "hysteria-clients"
 
 
-def list_local_vless_clients() -> list[dict]:
-    """Все строки clients.db (Wi‑Fi и *-mob отдельно)."""
-    db_path = VLESS_CONFIG_DIR / "clients.db"
-    if not db_path.is_file():
-        return []
-    try:
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        cur = conn.execute(
-            "SELECT name, port, created_at FROM clients ORDER BY created_at DESC LIMIT 200"
-        )
-        rows = [dict(r) for r in cur.fetchall()]
-        conn.close()
+def list_local_hy2_clients() -> list[dict]:
+    """Клиенты Hysteria2 на этой ноде (по файлам *.cred)."""
+    rows: list[dict] = []
+    if not HYSTERIA_DIR.is_dir():
         return rows
-    except sqlite3.Error:
-        return []
-
-
-def list_grouped_local_clients() -> list[dict]:
-    """Один логический клиент (Wi‑Fi + LTE), без дубля *-mob в списке."""
-    raw = list_local_vless_clients()
-    by_name = {r["name"]: r for r in raw}
-    grouped: list[dict] = []
-    handled: set[str] = set()
-
-    for name, row in by_name.items():
-        if name in handled:
+    for cred in sorted(HYSTERIA_DIR.glob("*.cred"), key=lambda p: p.stat().st_mtime, reverse=True):
+        username = cred.stem
+        if not username or username.startswith("_"):
             continue
-        if name.endswith("-mob"):
-            base = name[: -len("-mob")]
-            if base in by_name:
-                continue
-            handled.add(name)
-            grouped.append(
-                {
-                    "username": base,
-                    "wifi_port": None,
-                    "mobile_port": row.get("port"),
-                    "created_at": row.get("created_at"),
-                }
-            )
-            continue
-        handled.add(name)
-        mob = by_name.get(f"{name}-mob")
-        if mob:
-            handled.add(f"{name}-mob")
-        grouped.append(
+        rows.append(
             {
-                "username": name,
-                "wifi_port": row.get("port"),
-                "mobile_port": mob.get("port") if mob else None,
-                "created_at": row.get("created_at"),
+                "username": username,
+                "created_at": _mtime_iso(cred),
             }
         )
-    grouped.sort(key=lambda x: x.get("created_at") or "", reverse=True)
-    return grouped
+    return rows
+
+
+def _mtime_iso(path: Path) -> str:
+    try:
+        return path.stat().st_mtime.__str__()
+    except OSError:
+        return ""
 
 
 def count_grouped_local_clients() -> int:
-    return len(list_grouped_local_clients())
+    return len(list_local_hy2_clients())
+
+
+def list_grouped_local_clients() -> list[dict]:
+    return list_local_hy2_clients()
 
 
 def load_local_client_urls(username: str) -> dict[str, str]:
     out: dict[str, str] = {}
-    wifi = URL_DIR / f"{username}.txt"
-    if wifi.is_file():
-        out["wifi_vless_url"] = wifi.read_text().strip()
-    mob = f"{username}-mob"
-    mob_v = URL_DIR / f"{mob}.txt"
-    if mob_v.is_file():
-        out["mobile_vless_url"] = mob_v.read_text().strip()
-    hy = URL_DIR / f"{mob}-hy2.txt"
-    if not hy.is_file():
-        hy = URL_DIR / f"{username}-hy2.txt"
-    if hy.is_file():
-        out["hysteria_url"] = hy.read_text().strip()
-    cf = URL_DIR / f"{username}-cf.txt"
-    if cf.is_file():
-        out["cf_vless_url"] = cf.read_text().strip()
+    url = URL_DIR / f"{username}.txt"
+    if url.is_file():
+        content = url.read_text().strip()
+        if content.startswith("hysteria2://"):
+            out["hysteria_url"] = content
+    pc = URL_DIR / f"{username}-pc.txt"
+    if pc.is_file():
+        content = pc.read_text().strip()
+        if content.startswith("vless://"):
+            out["wifi_vless_url"] = content
     return out
 
 
 def local_qr_filenames(username: str) -> tuple[str | None, str | None]:
-    wifi_qr = QR_DIR / f"{username}.png"
-    mob_qr = QR_DIR / f"{username}-mob.png"
-    return (
-        wifi_qr.name if wifi_qr.is_file() else None,
-        mob_qr.name if mob_qr.is_file() else None,
-    )
+    qr = QR_DIR / f"{username}.png"
+    pc_qr = QR_DIR / f"{username}-pc.png"
+    return (qr.name if qr.is_file() else None, pc_qr.name if pc_qr.is_file() else None)

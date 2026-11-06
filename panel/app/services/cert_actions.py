@@ -53,6 +53,12 @@ def sync_hysteria_from_le() -> CertActionResult:
     HYSTERIA_CERT.mkdir(parents=True, exist_ok=True)
     subprocess.run(["cp", "-f", fc, str(HYSTERIA_CERT / "fullchain.pem")], check=False)
     subprocess.run(["cp", "-f", pk, str(HYSTERIA_CERT / "privkey.pem")], check=False)
+    subprocess.run(
+        ["systemctl", "restart", "hysteria-server.service"],
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
     return CertActionResult(True, "Hysteria: fullchain/privkey обновлены")
 
 

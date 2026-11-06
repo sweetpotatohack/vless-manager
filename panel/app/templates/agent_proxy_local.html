@@ -4,26 +4,19 @@
 {% if flash_err %}<div class="alert alert-error">{{ flash_err }}</div>{% endif %}
 <p style="color:var(--muted)">Каталог master: <a href="{{ master_proxy_url }}" target="_blank" rel="noopener">{{ master_proxy_url }}</a></p>
 
-{% if urls.hysteria_url %}
+{% if hysteria_url %}
 <div class="card">
-  <h3 style="margin-top:0">★ LTE — Hysteria2</h3>
-  <div class="url-box">{{ urls.hysteria_url }}</div>
-  {% if qr_mobile %}<div class="qr-row"><img src="/qr/{{ qr_mobile }}" alt="QR"></div>{% endif %}
+  <h3 style="margin-top:0">Hysteria2 — телефон</h3>
+  <div class="url-box">{{ hysteria_url }}</div>
+  <div class="qr-row"><img src="/qr/{{ username }}.png" alt="QR Hysteria2"></div>
 </div>
 {% endif %}
 
-{% if urls.mobile_vless_url %}
+{% if wifi_vless_url %}
 <div class="card">
-  <h3 style="margin-top:0">LTE — VLESS REALITY</h3>
-  <div class="url-box">{{ urls.mobile_vless_url }}</div>
-</div>
-{% endif %}
-
-{% if urls.wifi_vless_url %}
-<div class="card">
-  <h3 style="margin-top:0">Wi‑Fi — VLESS TLS{% if wifi_port %} :{{ wifi_port }}{% endif %}</h3>
-  <div class="url-box">{{ urls.wifi_vless_url }}</div>
-  {% if qr_wifi %}<div class="qr-row"><img src="/qr/{{ qr_wifi }}" alt="QR"></div>{% endif %}
+  <h3 style="margin-top:0">VLESS TCP+TLS — ПК / NekoRay</h3>
+  <div class="url-box">{{ wifi_vless_url }}</div>
+  <div class="qr-row"><img src="/qr/{{ username }}-pc.png" alt="QR VLESS PC"></div>
 </div>
 {% endif %}
 

@@ -18,8 +18,9 @@ def create_provision_job(
     *,
     node_id: int,
     username: str,
-    wifi: bool,
-    mobile: bool,
+    wifi: bool = False,
+    mobile: bool = False,
+    has_hy2: bool = True,
 ) -> AgentJob:
     job = AgentJob(
         node_id=node_id,
@@ -27,6 +28,7 @@ def create_provision_job(
         username=username,
         has_wifi=wifi,
         has_mobile=mobile,
+        has_hy2=has_hy2,
         status="pending",
     )
     db.add(job)
@@ -70,8 +72,9 @@ def create_delete_job(
     *,
     node_id: int,
     username: str,
-    wifi: bool,
-    mobile: bool,
+    wifi: bool = False,
+    mobile: bool = False,
+    has_hy2: bool = True,
 ) -> AgentJob:
     job = AgentJob(
         node_id=node_id,
@@ -79,6 +82,7 @@ def create_delete_job(
         username=username,
         has_wifi=wifi,
         has_mobile=mobile,
+        has_hy2=has_hy2,
         status="pending",
     )
     db.add(job)
