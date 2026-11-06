@@ -1,0 +1,18 @@
+Почему тест NekoBox показывает cp.cloudflare.com и таймаут
+-----------------------------------------------
+При проверке соединения NekoBox открывает URL http://cp.cloudflare.com/ — это НЕ значит,
+что трафик «идёт через Cloudflare». Запрос просто проверяется через ваш VLESS; в логе виден
+хост теста, а ошибка вида dial tcp ВАШ_IP:ПОРТ: i/o timeout значит: до сервера на этом
+порту TCP не доходит.
+
+UFW и iptables
+--------------
+Если включён UFW, порты VLESS нужно открывать командой:
+  sudo ufw allow 25000:45000/tcp comment 'vless-manager'
+Правило «iptables -I INPUT» вручную UFW может сбросить при «ufw reload».
+Скрипт vless-manager при активном UFW добавляет только ufw, без сырого iptables INPUT.
+
+Что проверить:
+1) sudo ufw status numbered  — должна быть строка с 25000:45000/tcp ALLOW.
+2) В панели облака (Security Group) откройте входящий TCP на порт из VLESS URL.
+3) nc -vz ВАШ_IP ПОРТ с внешней сети.

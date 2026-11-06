@@ -1,0 +1,27 @@
+{
+  "dns": {
+    "servers": [
+      {
+        "type": "tcp",
+        "tag": "dns-tcp",
+        "server": "8.8.8.8",
+        "server_port": 53,
+        "detour": "proxy"
+      },
+      {
+        "type": "tls",
+        "tag": "dns-dot",
+        "server": "1.1.1.1",
+        "server_port": 853,
+        "detour": "proxy"
+      },
+      {
+        "type": "local",
+        "tag": "local"
+      }
+    ],
+    "final": "dns-tcp",
+    "strategy": "prefer_ipv4",
+    "independent_cache": true
+  }
+}

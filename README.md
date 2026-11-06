@@ -356,6 +356,7 @@ ufw status numbered
 ├── hysteria-clients/    # <name>.cred — логин:пароль клиента (авторизация Hysteria2)
 ├── urls/                # <name>.txt (Hysteria2), <name>-pc.txt (PC VLESS), <name>-cf.txt (Cloudflare WS)
 ├── qr-codes/            # <name>.png (Hysteria2), <name>-pc.png (PC VLESS), <name>-cf.png (Cloudflare WS)
+├── templates/           # подсказки клиента: NekoBox DNS, firewall, шифрование
 ├── tls.env              # TLS_MODE, PUBLIC_HOST, пути LE
 ├── hysteria.env         # HY2_OBFS — пароль обфускации Salamander
 └── clients.db           # legacy-БД (не используется панелью для Hysteria2)
