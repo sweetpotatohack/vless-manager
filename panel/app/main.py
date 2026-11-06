@@ -77,6 +77,8 @@ from app.services.nodes_helpers import (
 from app.services.ports import port_status
 from app.services.provision import (
     ProvisionResult,
+    _extract_port_from_vless,
+    _extract_uuid_from_vless,
     build_client_catalog_for_master,
     delete_local,
     delete_remote_client,
@@ -864,6 +866,27 @@ def proxy_detail(
     if not pu:
         raise HTTPException(404)
     node = db.get(Node, pu.node_id)
+
+    # Локальная нода: показываем актуальный конфиг с диска, а не закешированный в БД.
+    # Правки vless_manager.sh (например, смена хоста на прямой IP) не должны оставлять
+    # устаревшую ссылку в вебе.
+    if node and node.role == "local":
+        local_urls = load_local_client_urls(pu.username)
+        changed = False
+        hy2 = local_urls.get("hysteria_url")
+        if hy2 and hy2 != pu.hysteria_url:
+            pu.hysteria_url = hy2
+            changed = True
+        pc_url = local_urls.get("wifi_vless_url")
+        if pc_url and pc_url != pu.wifi_vless_url:
+            pu.wifi_vless_url = pc_url
+            pu.wifi_port = _extract_port_from_vless(pc_url)
+            pu.uuid = _extract_uuid_from_vless(pc_url) or pu.uuid
+            pu.has_wifi = True
+            changed = True
+        if changed:
+            db.commit()
+
     ensure_qr_codes_for_user(
         pu.username,
         hysteria_url=pu.hysteria_url,

@@ -1507,7 +1507,9 @@ build_vless_url_from_config() {
         path_enc=$(printf '%s' "$ws_path" | sed 's|/|%2F|g')
         echo "vless://${uuid}@${connect_host}:${port}?encryption=none&security=tls&sni=${sni}&fp=chrome&type=ws&host=${connect_host}&path=${path_enc}&${insecure_q}#${client_name}"
     elif grep -qE '"network":\s*"tcp"' "$config_file" 2>/dev/null && grep -q '"security": "tls"' "$config_file" 2>/dev/null; then
-        echo "vless://${uuid}@${connect_host}:${port}?encryption=none&security=tls&sni=${sni}&fp=chrome&type=tcp&${insecure_q}#${client_name}"
+        local direct_ip
+        direct_ip=$(get_server_ip)
+        echo "vless://${uuid}@${direct_ip}:${port}?encryption=none&security=tls&sni=${sni}&fp=chrome&type=tcp&${insecure_q}#${client_name}"
     else
         echo "vless://${uuid}@${connect_host}:${port}?encryption=none&security=none&type=tcp#${client_name}"
     fi
@@ -1515,21 +1517,26 @@ build_vless_url_from_config() {
 
 # Готовый профиль sing-box / NekoBox: legacy DNS (tcp:// через прокси), TLS + xudp; Instagram/приложения — без DoH-шума
 write_singbox_client_bundle() {
-    local client_name="$1" uuid="$2" port="$3" server_ip="$4"
+    local client_name="$1" uuid="$2" port="$3" sni="$4"
     local out="$BUNDLE_DIR/${client_name}.sing-box.json"
     local cfg="$CLIENT_DIR/${client_name}.json"
+    local connect_ip insecure_flag=1
+    connect_ip=$(get_server_ip)
+    if tls_uses_letsencrypt; then insecure_flag=0; fi
     mkdir -p "$BUNDLE_DIR"
     if ! command -v python3 >/dev/null 2>&1; then
         log "WARN" "python3 не найден — профиль sing-box не создан"
         return 1
     fi
-    CLIENT_NAME="$client_name" UUID="$uuid" PORT="$port" SERVER_IP="$server_ip" CFG_PATH="$cfg" OUT_PATH="$out" python3 << 'PY'
+    CLIENT_NAME="$client_name" UUID="$uuid" PORT="$port" SNI="$sni" CONNECT_IP="$connect_ip" INSECURE="$insecure_flag" CFG_PATH="$cfg" OUT_PATH="$out" python3 << 'PY'
 import json, os, re
 
 name = os.environ["CLIENT_NAME"]
 uuid = os.environ["UUID"]
 port = int(os.environ["PORT"])
-sip = os.environ["SERVER_IP"]
+sni = os.environ["SNI"]
+connect_ip = os.environ["CONNECT_IP"]
+insecure = os.environ["INSECURE"] == "1"
 cfg_path = os.environ["CFG_PATH"]
 out_path = os.environ["OUT_PATH"]
 
@@ -1551,7 +1558,7 @@ if ws:
 proxy = {
     "type": "vless",
     "tag": "proxy",
-    "server": sip,
+    "server": sni if ws else connect_ip,
     "server_port": port,
     "uuid": uuid,
     "packet_encoding": "xudp",
@@ -1559,8 +1566,8 @@ proxy = {
 if use_tls:
     proxy["tls"] = {
         "enabled": True,
-        "server_name": sip,
-        "insecure": True,
+        "server_name": sni,
+        "insecure": insecure,
         "alpn": ["http/1.1"],
     }
 
@@ -1568,7 +1575,7 @@ if ws:
     proxy["transport"] = {
         "type": "ws",
         "path": ws_path,
-        "headers": {"Host": sip},
+        "headers": {"Host": sni},
     }
 
 doc = {
