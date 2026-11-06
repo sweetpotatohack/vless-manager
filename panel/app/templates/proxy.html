@@ -107,6 +107,12 @@
         <td data-label="Дата">{{ u.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
         <td class="form-actions cell-actions-stack" data-label="Действия" style="margin:0">
           <a href="/proxy/{{ u.id }}" class="btn btn-cyan" style="padding:0.35rem 0.65rem;font-size:0.62rem">Ссылка</a>
+          {% if not u.wifi_vless_url %}
+          <form method="post" action="/proxy/{{ u.id }}/generate-pc" style="display:inline">
+            {% include "csrf_input.html" %}
+            <button type="submit" class="btn btn-blue" style="padding:0.35rem 0.65rem;font-size:0.62rem">PC VLESS</button>
+          </form>
+          {% endif %}
           <form method="post" action="/proxy/{{ u.id }}/delete" style="display:inline" onsubmit="return confirm('Удалить конфиг {{ u.username }} на ноде?');">
             {% include "csrf_input.html" %}
             <button type="submit" class="btn btn-red" style="padding:0.35rem 0.65rem;font-size:0.62rem">Удалить</button>

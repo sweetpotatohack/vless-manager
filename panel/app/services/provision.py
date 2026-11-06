@@ -123,6 +123,36 @@ def provision_local(username: str) -> ProvisionResult:
     )
 
 
+def provision_pc_local(username: str) -> ProvisionResult:
+    """Создать только PC VLESS TCP+TLS, не трогая Hysteria2."""
+    if err := validate_username(username):
+        return ProvisionResult(False, err)
+
+    pc_url = _read_url_file(username, "-pc")
+    if pc_url:
+        return ProvisionResult(
+            ok=True,
+            message="Синхронизировано с конфигом на ноде",
+            wifi_vless_url=pc_url,
+            wifi_port=_extract_port_from_vless(pc_url),
+            uuid=_extract_uuid_from_vless(pc_url),
+        )
+
+    err = _run_cli("create-pc", username)
+    if isinstance(err, ProvisionResult):
+        return err
+    pc_url = _read_url_file(username, "-pc")
+    if not pc_url:
+        return ProvisionResult(False, "PC VLESS: нет URL на ноде")
+    return ProvisionResult(
+        ok=True,
+        message="OK",
+        wifi_vless_url=pc_url,
+        wifi_port=_extract_port_from_vless(pc_url),
+        uuid=_extract_uuid_from_vless(pc_url),
+    )
+
+
 # Обратная совместимость для старых вызовов и API-агентов
 provision_hy2_local = provision_local
 

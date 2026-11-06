@@ -82,6 +82,7 @@ from app.services.provision import (
     delete_remote_client,
     ensure_qr_codes_for_user,
     provision_local,
+    provision_pc_local,
     provision_remote,
     qr_png_path,
 )
@@ -871,6 +872,7 @@ def proxy_detail(
     qr_hy2 = qr_png_path(pu.username)
     qr_pc = qr_png_path(pu.username, "pc")
     flash_err = request.query_params.get("err")
+    flash_ok = request.query_params.get("msg")
     return templates.TemplateResponse(
         "proxy_detail.html",
         {
@@ -882,8 +884,77 @@ def proxy_detail(
             "qr_hy2": qr_hy2.name if qr_hy2 else None,
             "qr_pc": qr_pc.name if qr_pc else None,
             "flash_err": flash_err,
+            "flash_ok": flash_ok,
         },
     )
+
+
+@app.post("/proxy/{user_id}/generate-pc")
+async def proxy_generate_pc(
+    user_id: int,
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+    _: None = Depends(require_form_csrf),
+):
+    pu = db.get(ProxyUser, user_id)
+    if not pu:
+        raise HTTPException(404)
+    node = db.get(Node, pu.node_id)
+    if not node:
+        raise HTTPException(400, "Нода не найдена")
+
+    if node.role == "local":
+        result = await asyncio.to_thread(provision_pc_local, pu.username)
+    else:
+        if not node.api_token:
+            raise HTTPException(400, "Удалённая нода недоступна (нет токена)")
+        if remote_uses_job_queue(node):
+            job = create_provision_job(
+                db,
+                node_id=node.id,
+                username=pu.username,
+                has_hy2=True,
+                has_wifi=True,
+            )
+            try:
+                done = await wait_for_job(job.id, timeout_sec=180.0)
+            except TimeoutError as e:
+                result = ProvisionResult(False, str(e))
+            else:
+                if done.status == "failed":
+                    result = ProvisionResult(False, done.error_message or "Ошибка на agent")
+                else:
+                    result = ProvisionResult(
+                        ok=True,
+                        message="OK",
+                        hysteria_url=done.hysteria_url,
+                        wifi_vless_url=done.wifi_vless_url,
+                        wifi_port=done.wifi_port,
+                        uuid=done.uuid,
+                    )
+        else:
+            if not node.api_base:
+                raise HTTPException(400, "Удалённая нода недоступна")
+            result = await provision_remote(node.api_base, node.api_token, pu.username)
+
+    if not result.ok:
+        return RedirectResponse(
+            f"/proxy/{user_id}?err={quote(result.message[:180])}",
+            status_code=303,
+        )
+
+    if result.wifi_vless_url:
+        pu.wifi_vless_url = result.wifi_vless_url
+        pu.wifi_port = result.wifi_port
+        pu.has_wifi = True
+        pu.uuid = result.uuid or pu.uuid
+        db.commit()
+        ensure_qr_codes_for_user(
+            pu.username,
+            hysteria_url=pu.hysteria_url,
+            wifi_vless_url=pu.wifi_vless_url,
+        )
+    return RedirectResponse(f"/proxy/{user_id}?msg=PC VLESS сгенерирован", status_code=303)
 
 
 @app.post("/proxy/{user_id}/delete")

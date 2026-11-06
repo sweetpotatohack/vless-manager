@@ -1,6 +1,9 @@
 {% extends "base.html" %}
 {% block content %}
 <h2>Клиент: {{ user.username }}</h2>
+{% if flash_ok %}
+<div class="alert alert-ok animate-in">{{ flash_ok }}</div>
+{% endif %}
 {% if flash_err %}
 <div class="alert alert-error animate-in">{{ flash_err }}</div>
 {% endif %}
@@ -30,6 +33,15 @@
   {% if qr_pc %}
   <div class="qr-row"><img src="/qr/{{ qr_pc }}" alt="QR VLESS PC"></div>
   {% endif %}
+</div>
+{% else %}
+<div class="card">
+  <h3 style="margin-top:0">VLESS для ПК не создан</h3>
+  <p class="hint" style="margin-top:0">Hysteria2 работает, но отдельного PC-профиля ещё нет. Генерация добавит VLESS TCP+TLS и не тронет Hysteria2.</p>
+  <form method="post" action="/proxy/{{ user.id }}/generate-pc">
+    {% include "csrf_input.html" %}
+    <button type="submit" class="btn btn-blue">Сгенерировать PC VLESS</button>
+  </form>
 </div>
 {% endif %}
 
