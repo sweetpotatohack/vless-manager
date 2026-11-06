@@ -11,7 +11,7 @@
 | Компонент | Назначение |
 |-----------|------------|
 | **`install_vless_manager.sh`** | Единая установка: Hysteria2, TLS, firewall, sample-клиент, web-панель, systemd |
-| **`vless_manager.sh`** | CLI/меню: создание/удаление Hysteria2-клиентов, QR |
+| **`vless_manager.sh`** | CLI/меню: Hysteria2 + PC VLESS + Cloudflare-профили, QR |
 | **`panel/`** | Web **Control Panel** (FastAPI): Proxy, ноды, сертификаты, кабинет админа |
 | **Агент на VPS** | Удалённая нода: тот же стек + API для master |
 
@@ -44,6 +44,8 @@ vless://UUID@IP:PORT?encryption=none&security=tls&sni=your.domain&fp=chrome&type
 - VLESS + TCP + TLS работает в NekoRay/v2rayN штатно, без TUN-тюнинга;
 - живёт на отдельном TCP-порту и не ломает рабочий Hysteria2.
 
+> **Домен за Cloudflare (оранжевое облако).** Cloudflare не проксирует произвольные TCP-порты, поэтому PC VLESS (TCP+TLS) в `vless://`/QR автоматически получает **прямой IP сервера**, а `sni=` остаётся доменом (под LE-сертификат). Если A-запись домена в Cloudflare стоит «Proxied», а не «DNS only» — не пугайтесь, что в ссылке IP вместо домена: так и нужно, иначе порт 25000–45000 не достучится. Для обхода **через сам Cloudflare** есть отдельный WS-профиль — см. «Cloudflare обход» ниже.
+
 ---
 
 ## Web-панель
@@ -56,6 +58,7 @@ vless://UUID@IP:PORT?encryption=none&security=tls&sni=your.domain&fp=chrome&type
 | **Proxy** | Создание пользователя → Hysteria2 (телефон) + PC VLESS + QR, список клиентов |
 | **Ноды** | Master + remote agent, порты firewall, install.sh |
 | **Сертификаты** | Let's Encrypt, autoprenew, Hysteria2, certbot timer |
+| **Cloudflare** | Обход блокировок: VLESS + WS через CDN, Origin Rule, SSL-режим |
 | **Кабинет** | Пароль admin, Telegram / SMTP оповещения |
 
 ### Обзор
@@ -115,14 +118,15 @@ sudo ./install_vless_manager.sh
 
 Установщик спросит:
 - **домен для TLS** (например `vpn.example.com`) и **email** — или Enter для самоподписи;
-- остальное сделает сам: Hysteria2, firewall, LE, панель, sample-клиент.
+- остальное сделает сам: Hysteria2, firewall, LE, панель, sample-клиенты (Hysteria2 + PC VLESS).
 
 После установки:
 
 ```bash
 systemctl status hysteria-server   # Hysteria2 (UDP :25001)
 systemctl status vless-panel       # Web-панель :8765
-cat /etc/vless-manager/urls/sample_client.txt   # пример профиля
+cat /etc/vless-manager/urls/sample_client.txt      # пример Hysteria2
+cat /etc/vless-manager/urls/sample_client-pc.txt    # пример PC VLESS
 ```
 
 ### 2. Войти в панель
@@ -232,6 +236,37 @@ cat /etc/vless-manager/urls/<имя>.txt
 
 ---
 
+## Cloudflare обход (VLESS + WebSocket)
+
+Когда провайдер режет прямой IP / REALITY, выдаётся дополнительный профиль через Cloudflare CDN:
+
+```text
+Клиент → Cloudflare:443 (VLESS + WS, SNI=поддомен) → сервер:8443 (xray-cf)
+```
+
+Это отдельный профиль `<name>-cf` — он не трогает Hysteria2 и PC VLESS.
+
+### Настройка в панели
+
+1. Перенесите NS домена на Cloudflare и дождитесь статуса **Active**.
+2. В панели откройте раздел **Cloudflare** (боковое меню).
+3. Вставьте **API-токен** Cloudflare (права: Zone → DNS:Edit, Zone → Zone:Edit), укажите **зону** (домен), **hostname** (например `vpn.example.com`), **path** (по умолчанию `/ws-akuma67`) и **origin-порт** (по умолчанию `8443`).
+4. Нажмите **«Сохранить и поднять xray-cf»**, затем **«Подготовить домен»** — панель сама создаст A-запись (proxied), Origin Rule на origin-порт и выставит SSL-режим.
+5. **«Проверить origin»** — Cloudflare должен достучаться до сервера: HTTP 400/404/502/503 = ок, 521–524 = origin недоступен.
+
+### Выдача CF-профиля
+
+```bash
+/opt/vless-manager/vless_manager.sh cli create-cf NAME   # /etc/vless-manager/urls/<name>-cf.txt + QR
+/opt/vless-manager/vless_manager.sh cli delete-cf NAME
+/opt/vless-manager/vless_manager.sh cli ensure-cf        # поднять/пересобрать xray-cf
+/opt/vless-manager/vless_manager.sh cli cf-status
+```
+
+Профиль: `vless://UUID@vpn.example.com:443?encryption=none&security=tls&sni=vpn.example.com&fp=chrome&type=ws&path=...&host=vpn.example.com#name-cf`. QR: `/etc/vless-manager/qr-codes/<name>-cf.png`.
+
+---
+
 ## CLI (vless-manager)
 
 Основные команды:
@@ -254,6 +289,18 @@ cat /etc/vless-manager/urls/<имя>.txt
 
 # Пересобрать конфиг/сервис Hysteria2 (после ручных правок)
 /opt/vless-manager/vless_manager.sh cli ensure-hy2
+
+# Cloudflare-профиль (обход блокировок через CDN)
+/opt/vless-manager/vless_manager.sh cli create-cf NAME
+/opt/vless-manager/vless_manager.sh cli delete-cf NAME
+/opt/vless-manager/vless_manager.sh cli ensure-cf
+/opt/vless-manager/vless_manager.sh cli cf-status
+
+# Mobile REALITY (TCP :443, для мобильных сетей)
+/opt/vless-manager/vless_manager.sh cli create-mobile NAME
+
+# Сменить публичный хост в ссылках (домен или IP)
+/opt/vless-manager/vless_manager.sh cli set-public-host DOMAIN_OR_IP
 
 # Интерактивное меню
 vless-manager
@@ -291,6 +338,7 @@ systemctl restart vless-panel
 | `vless-xray.service` / per-client xray | 25000–45000 | tcp | PC VLESS TCP+TLS (NekoRay/v2rayN) |
 | `vless-panel.service` | 8765 | tcp | Web-панель HTTPS |
 | `vless-panel.service` | 8766 | tcp | HTTP fallback панели |
+| `xray-cf.service` | 8443 | tcp | Cloudflare WS (origin для CDN) |
 | certbot | 80 | tcp | Let's Encrypt HTTP-01 (выпуск/продление) |
 
 UFW настраивается установщиком автоматически. Проверить:
@@ -306,8 +354,8 @@ ufw status numbered
 ```
 /etc/vless-manager/
 ├── hysteria-clients/    # <name>.cred — логин:пароль клиента (авторизация Hysteria2)
-├── urls/                # <name>.txt (Hysteria2), <name>-pc.txt (PC VLESS)
-├── qr-codes/            # <name>.png (Hysteria2), <name>-pc.png (PC VLESS)
+├── urls/                # <name>.txt (Hysteria2), <name>-pc.txt (PC VLESS), <name>-cf.txt (Cloudflare WS)
+├── qr-codes/            # <name>.png (Hysteria2), <name>-pc.png (PC VLESS), <name>-cf.png (Cloudflare WS)
 ├── tls.env              # TLS_MODE, PUBLIC_HOST, пути LE
 ├── hysteria.env         # HY2_OBFS — пароль обфускации Salamander
 └── clients.db           # legacy-БД (не используется панелью для Hysteria2)

@@ -120,6 +120,7 @@ body {
 }
 .nav-dot-red { background: var(--red-bright); box-shadow: 0 0 6px var(--red); }
 .nav-dot-orange { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
+.nav-dot-cyan { background: var(--cyan-bright); box-shadow: 0 0 6px var(--cyan); }
 
 .nav a:hover {
   border-color: rgba(59, 130, 246, 0.35);
